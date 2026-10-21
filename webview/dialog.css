@@ -1,0 +1,2 @@
+.scope-dialog { padding: 0; border: 0; background: transparent; max-width: min(700px, 95vw); color: inherit; }
+.scope-dialog::backdrop { background: #0009; }

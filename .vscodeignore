@@ -1,0 +1,16 @@
+node_modules/**
+src/**
+webview/**
+tests/**
+e2e/**
+test-results/**
+playwright-report/**
+playwright.config.ts
+scripts/**
+.vscode/**
+tsconfig.json
+vite.config.ts
+vitest.config.ts
+package-lock.json
+**/*.map
+**/*.vsix
