@@ -16,7 +16,13 @@ function declarationName(node: ts.FunctionLikeDeclaration, file: ts.SourceFile):
   if (ts.isVariableDeclaration(parent) || ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent)) return parent.name.getText(file);
   if (ts.isExportAssignment(parent)) return 'default';
   if (ts.isFunctionDeclaration(node)) return 'default';
-  return `callback@${file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1}`;
+  if (ts.isCallExpression(parent)) {
+    const callee = parent.expression.getText(file);
+    const description = parent.arguments.find(argument => ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument));
+    return `${callee} callback${description ? ` [${description.getText(file)}]` : ''}`;
+  }
+  if (ts.isJsxExpression(parent) && parent.parent && ts.isJsxAttribute(parent.parent)) return `${parent.parent.name.getText(file)} callback`;
+  return 'callback';
 }
 function keyFor(node: ts.FunctionLikeDeclaration, file: ts.SourceFile): string {
   const names = [declarationName(node, file)];
@@ -73,7 +79,8 @@ export function extract(sources: Map<string, string>): Extraction {
       if (isFunction(node) && node.body) {
         const rawKey = keyFor(node, file).replace(root, '');
         let key = rawKey;
-        if (functions.has(key)) key = `${rawKey}@${node.getStart(file)}`;
+        let occurrence = 2;
+        while (functions.has(key)) key = `${rawKey} #${occurrence++}`;
         const name = key.slice(key.indexOf('::') + 2);
         const params = node.parameters.map(p => p.getText(file)).join(', ');
         const signature = checker.getSignatureFromDeclaration(node);
@@ -120,14 +127,22 @@ export function compareSources(before: Map<string, string>, after: Map<string, s
     return `${rename.get(key.slice(0, split)) ?? key.slice(0, split)}${key.slice(split)}`;
   };
   const oldFunctions = new Map([...old.functions].map(([key, fn]) => [canonical(key), fn]));
+  const changedPaths = new Set(files.map(file => file.path));
+  const unavailablePaths = new Set(files.filter(file => {
+    const needsBefore = !file.status.startsWith('A');
+    const needsAfter = !file.status.startsWith('D');
+    return (needsBefore && !before.has(file.oldPath ?? file.path)) || (needsAfter && !after.has(file.path));
+  }).map(file => file.path));
   const all = new Map<string, ReviewNode>();
   const changed = new Set<string>();
   for (const key of new Set([...oldFunctions.keys(), ...next.functions.keys()])) {
     const previous = oldFunctions.get(key), current = next.functions.get(key);
-    const status = !previous ? 'added' : !current ? 'removed' : previous.source.code !== current.source.code ? 'modified' : 'context';
+    const path = current?.path ?? rename.get(previous!.path) ?? previous!.path;
+    if (unavailablePaths.has(path)) continue;
+    const status = !changedPaths.has(path) ? 'context' : !previous ? 'added' : !current ? 'removed' : previous.source.code !== current.source.code ? 'modified' : 'context';
     all.set(key, { id: key, file: current?.path ?? rename.get(previous!.path) ?? previous!.path, name: current?.name ?? previous!.name,
       kind: 'function', status, before: previous?.source, after: current?.source });
-    if (status !== 'context' || (previous && current && previous.path !== current.path)) changed.add(key);
+    if (status !== 'context' || (changedPaths.has(path) && previous && current && previous.path !== current.path)) changed.add(key);
   }
   const edgeMap = new Map<string, ReviewEdge>();
   for (const [revision, result] of [['before', old], ['after', next]] as const) {
@@ -146,6 +161,7 @@ export function compareSources(before: Map<string, string>, after: Map<string, s
   const nodes = [...visible].map(key => all.get(key)!).filter(Boolean);
   const inventory = files.map(f => ({ ...f }));
   for (const file of inventory) {
+    if (unavailablePaths.has(file.path)) continue;
     if (!sourcePattern.test(file.path) && !(file.oldPath && sourcePattern.test(file.oldPath))) continue;
     const oldCode = before.get(file.oldPath ?? file.path), newCode = after.get(file.path);
     const residual = (text: string | undefined, extraction: Extraction, path: string) => {
@@ -167,12 +183,15 @@ export function compareSources(before: Map<string, string>, after: Map<string, s
   const warnings = [...new Set([...old.warnings, ...next.warnings])];
   warnings.push('Best-effort source relationships, not runtime calls. Method edges identify declarations, not guaranteed dispatch targets. DI, events, callbacks and external dependencies may be unresolved.');
   warnings.push('Analysis reads tracked source only; dependency packages, standard library types and generated declarations are not loaded. Inferred signatures may be incomplete.');
-  return { nodes, edges: [...edgeMap.values()].filter(e => visible.has(e.source) && visible.has(e.target)), files: inventory, warnings, unresolvedCalls: next.unresolved };
+  const nodeIds = new Set(nodes.map(node => node.id));
+  return { nodes, edges: [...edgeMap.values()].filter(e => nodeIds.has(e.source) && nodeIds.has(e.target)), files: inventory, warnings, unresolvedCalls: next.unresolved };
 }
 
 export async function analyzeRepository(repo: string, baseLabel: string, headLabel: string): Promise<ReviewGraph> {
   const [base, head] = await Promise.all([resolveCommit(repo, baseLabel), resolveCommit(repo, headLabel)]);
-  const [old, next, files] = await Promise.all([readSnapshot(repo, base), readSnapshot(repo, head), changedFiles(repo, base, head)]);
+  const files = await changedFiles(repo, base, head);
+  const priority = [...new Set(files.flatMap(file => [file.path, ...(file.oldPath ? [file.oldPath] : [])]))];
+  const [old, next] = await Promise.all([readSnapshot(repo, base, priority), readSnapshot(repo, head, priority)]);
   const result = compareSources(old.sources, next.sources, files);
   return { repository: posix.basename(repo), base, head, baseLabel, headLabel, ...result,
     warnings: [...result.warnings, ...old.warnings, ...next.warnings] };

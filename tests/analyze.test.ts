@@ -5,6 +5,24 @@ import { validCanvas, emptyCanvas } from '../src/model';
 
 const source = (files: Record<string, string>) => new Map(Object.entries(files));
 describe('snapshot analysis', () => {
+  it('does not invent deleted and added callbacks after a line insertion', () => {
+    const code = 'describe("suite", () => {\n it("existing", () => { const helper = () => 1; return helper(); });\n});';
+    const result = compareSources(source({ 'a.test.ts': code }), source({ 'a.test.ts': '// new comment\n' + code }), [{ path: 'a.test.ts', status: 'M', represented: false }]);
+    expect(result.nodes.filter(node => node.kind === 'function' && node.status !== 'context')).toHaveLength(0);
+    expect(result.nodes.find(node => node.kind === 'module')).toBeDefined();
+  });
+  it('keeps existing named test callbacks stable when a preceding test is added', () => {
+    const before = 'describe("suite", () => { it("existing", () => 1); });';
+    const after = 'describe("suite", () => { it("new", () => 2); it("existing", () => 1); });';
+    const result = compareSources(source({ 'a.test.ts': before }), source({ 'a.test.ts': after }), [{ path: 'a.test.ts', status: 'M', represented: false }]);
+    expect(result.nodes.filter(node => node.status === 'removed')).toHaveLength(0);
+    expect(result.nodes.filter(node => node.status === 'added')).toHaveLength(1);
+  });
+  it('does not treat incomplete snapshot coverage as deleted source', () => {
+    const result = compareSources(source({ 'a.ts': 'function a() { return 1; }', 'untouched.ts': 'function context() {}' }), source({}), [{ path: 'a.ts', status: 'M', represented: false }]);
+    expect(result.nodes).toHaveLength(0);
+    expect(result.files[0].represented).toBe(false);
+  });
   it('resolves imported functions and includes unchanged callers', () => {
     const before = source({ 'src/main.ts': 'import { charge } from "./pay"; export function submit() { return charge(2); }', 'src/pay.ts': 'export function charge(x: number) { return x; }' });
     const after = new Map(before); after.set('src/pay.ts', 'export function charge(x: number) { return x + 1; }');

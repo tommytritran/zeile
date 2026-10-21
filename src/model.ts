@@ -20,15 +20,19 @@ export interface CanvasState {
   positions: Record<string, Point>; collapsed: string[]; manualEdges: ManualEdge[];
   notes: Record<string, string>; pinned: string[];
 }
+export interface BranchOption { ref: string; label: string; group: 'Local branches' | 'Remote branches' | 'Snapshots' }
+export interface BranchSelection { options: BranchOption[]; before: string; after: string }
 export type ToHost =
-  | { type: 'ready' } | { type: 'refresh' } | { type: 'selectComparison' }
+  | { type: 'ready' } | { type: 'refresh' } | { type: 'getBranches' } | { type: 'showLogs' } | { type: 'cancelAnalysis' }
+  | { type: 'changeBranch'; side: 'before' | 'after'; ref: string }
   | { type: 'saveLayout'; state: CanvasState }
   | { type: 'openSource'; id: string; revision: 'before' | 'after' }
   | { type: 'openDiff'; id: string };
 export type ToWebview =
+  | { type: 'branches'; selection: BranchSelection }
   | { type: 'loading'; message: string }
   | { type: 'error'; message: string }
-  | { type: 'graph'; graph: ReviewGraph; state?: CanvasState };
+  | { type: 'graph'; graph: ReviewGraph; state?: CanvasState; selection?: BranchSelection };
 export const emptyCanvas = (): CanvasState => ({ positions: {}, collapsed: [], manualEdges: [], notes: {}, pinned: [] });
 
 export function validCanvas(value: unknown): value is CanvasState {

@@ -75,7 +75,18 @@ test('production bundle runs with webview CSP and host messages', async ({ page 
     } else await route.abort();
   });
   await page.addInitScript(() => {
-    Object.assign(window, { acquireVsCodeApi: () => ({ postMessage: (message: { type: string }) => {
+    Object.assign(window, { acquireVsCodeApi: () => ({ postMessage: (message: { type: string; side?: string; ref?: string }) => {
+      if (message.type === 'changeBranch') {
+        document.documentElement.dataset.branchChange = `${message.side}:${message.ref}`;
+        return;
+      }
+      if (message.type === 'ready' || message.type === 'getBranches') setTimeout(() => window.postMessage({ type: 'branches', selection: {
+        before: 'refs/heads/main', after: 'refs/heads/feature', options: [
+          { ref: 'refs/heads/main', label: 'main', group: 'Local branches' },
+          { ref: 'refs/heads/feature', label: 'feature', group: 'Local branches' },
+          { ref: 'refs/remotes/origin/develop', label: 'origin/develop', group: 'Remote branches' }
+        ]
+      } }, '*'), 0);
       if (message.type === 'ready') setTimeout(() => window.postMessage({ type: 'graph', graph: {
         repository: 'fixture', base: 'abc', head: 'def', baseLabel: 'main', headLabel: 'feature', warnings: [], files: [{ path: 'app.ts', status: 'M', represented: true }], unresolvedCalls: 0, edges: [], nodes: [{ id: 'value', file: 'app.ts', name: 'value', kind: 'function', status: 'modified', before: { path: 'app.ts', line: 1, code: 'function value() { return 1; }', signature: '() → number' }, after: { path: 'app.ts', line: 1, code: 'function value() { return 2; }', signature: '() → number' } }]
       } }, '*'), 0);
@@ -83,7 +94,42 @@ test('production bundle runs with webview CSP and host messages', async ({ page 
   });
   await page.goto('http://zeile.test/');
   await expect(page.locator('.function-card')).toHaveCount(1);
+  const before = page.getByRole('combobox', { name: 'Before branch' });
+  const after = page.getByRole('combobox', { name: 'After branch' });
+  await expect(before).toHaveValue('refs/heads/main');
+  await expect(after).toHaveValue('refs/heads/feature');
+  await before.selectOption('refs/remotes/origin/develop');
+  await expect(page.locator('html')).toHaveAttribute('data-branch-change', 'before:refs/remotes/origin/develop');
+  await expect(after).toHaveValue('refs/heads/feature');
+  await after.selectOption('refs/heads/main');
+  await expect(page.locator('html')).toHaveAttribute('data-branch-change', 'after:refs/heads/main');
+  await expect(page.getByRole('button', { name: 'Change comparison…' })).toHaveCount(0);
   await page.locator('.function-card').click();
   await expect(page.locator('.source-content')).toContainText('return 2');
+  await page.evaluate(() => window.postMessage({ type: 'loading', message: 'Comparing selected branches…' }, '*'));
+  await expect(page.getByRole('status')).toContainText('Building the review map');
+  await expect(page.getByRole('status')).toContainText('Comparing selected branches');
+  await expect(page.locator('.mapping-spinner')).toBeVisible();
+  await expect(page.getByRole('status')).toContainText('1s elapsed');
+  await expect(page.locator('.function-card')).toHaveCount(0);
+  await expect(page.getByRole('combobox', { name: 'Before branch' })).toBeEnabled();
+  await expect(page.getByRole('combobox', { name: 'After branch' })).toBeEnabled();
+  await before.selectOption('refs/heads/feature');
+  await expect(page.locator('html')).toHaveAttribute('data-branch-change', 'before:refs/heads/feature');
+  await page.evaluate(() => window.postMessage({ type: 'error', message: 'Could not load selected branch.' }, '*'));
+  await expect(page.getByRole('alert')).toContainText('Could not load selected branch');
+  await expect(page.getByRole('status')).toHaveCount(0);
+  await expect(page.locator('.function-card')).toHaveCount(0);
+  await expect(page.getByRole('combobox', { name: 'Before branch' })).toBeEnabled();
+  await page.evaluate(() => window.postMessage({ type: 'branches', selection: { options: [], before: '', after: '' } }, '*'));
+  await expect(before).toBeEnabled();
+  await expect(before).toHaveValue('refs/heads/main');
+  await expect(page.getByRole('button', { name: 'Retry branch list' })).toHaveCount(0);
   expect(errors).toEqual([]);
+});
+
+test('browser demo explains why branch controls cannot be opened', async ({ page }) => {
+  await expect(page.getByText('Browser demo — branch selection requires the VS Code extension.', { exact: false })).toBeVisible();
+  await expect(page.getByRole('combobox', { name: 'Before branch' })).toBeDisabled();
+  await expect(page.getByRole('combobox', { name: 'After branch' })).toBeDisabled();
 });

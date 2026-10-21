@@ -2,7 +2,7 @@
   "name": "zeile",
   "displayName": "Zeile Review Map",
   "description": "A local, non-AI interactive map for reviewing TypeScript changes.",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "publisher": "zeile-local",
   "private": true,
   "type": "module",
@@ -29,6 +29,10 @@
       {
         "command": "zeile.openReviewMap",
         "title": "Zeile: Open Review Map"
+      },
+      {
+        "command": "zeile.showLogs",
+        "title": "Zeile: Show Diagnostics"
       }
     ]
   },

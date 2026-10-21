@@ -6,7 +6,7 @@ import { EditorState } from '@codemirror/state';
 import { EditorView, lineNumbers } from '@codemirror/view';
 import { javascript } from '@codemirror/lang-javascript';
 import { MergeView } from '@codemirror/merge';
-import { emptyCanvas, validCanvas, type CanvasState, type ReviewGraph, type ReviewNode, type ToHost, type ToWebview } from '../src/model';
+import { emptyCanvas, validCanvas, type BranchSelection, type CanvasState, type ReviewGraph, type ReviewNode, type ToHost, type ToWebview } from '../src/model';
 import '@xyflow/react/dist/style.css';
 import './style.css';
 import './dialog.css';
@@ -61,8 +61,30 @@ function ScopeDialog({ graph, close }: { graph?: ReviewGraph; close: () => void 
   return <dialog ref={dialog} className="scope-dialog" onCancel={close} onClose={close} aria-label="Analysis scope"><section className="scope-panel"><button type="button" className="icon-button close" aria-label="Close analysis scope" onClick={close}>×</button><span className="eyebrow">EVIDENCE, NOT ASSUMPTIONS</span><h2>What this map can tell you</h2><p>Edges describe source relationships. They do not guarantee runtime execution or complete impact coverage.</p><h3>Analysis notes</h3>{graph?.warnings.map(w => <p className="warning" key={w}>{w}</p>)}<p>{graph?.unresolvedCalls} call expressions unresolved in the head snapshot (repository-wide).</p><h3>Changed files outside the map</h3>{graph?.files.filter(f => !f.represented).map(f => <p key={f.path}><code>{f.path}</code> · {f.status}</p>)}<p className="muted">Opening every node is not verification. Manual connections and notes express reviewer understanding.</p></section></dialog>;
 }
 
+function MappingIndicator({ message }: { message: string }) {
+  const [seconds, setSeconds] = useState(0);
+  useEffect(() => {
+    const started = Date.now();
+    const timer = window.setInterval(() => setSeconds(Math.floor((Date.now() - started) / 1000)), 1000);
+    return () => window.clearInterval(timer);
+  }, []);
+  return <output className="overlay-card mapping-indicator" aria-live="polite">
+    <div className="mapping-heading"><span className="mapping-spinner" aria-hidden="true"/><span className="eyebrow">MAPPING YOUR CODE</span></div>
+    <h2>Building the review map</h2><p>{message}</p>
+    <div className="mapping-progress" aria-hidden="true"><span/></div>
+    <p className="mapping-detail">Reading committed source and resolving function relationships. Larger repositories can take longer.</p>
+    <div className="mapping-footer"><span aria-live="off">{seconds}s elapsed</span><span>No checkout · no code execution</span></div>
+    {host && <div className="mapping-actions"><button type="button" onClick={() => post({ type: 'cancelAnalysis' })}>Cancel mapping</button><button type="button" onClick={() => post({ type: 'showLogs' })}>Show diagnostics</button></div>}
+    {seconds >= 15 && <p className="mapping-slow">Still working. You can select a different branch above while this runs.</p>}
+  </output>;
+}
+
 function Workspace() {
   const [graph, setGraph] = useState<ReviewGraph>();
+  const [branches, setBranches] = useState<BranchSelection>({ options: host ? [] : [
+    { ref: 'main', label: 'main', group: 'Local branches' },
+    { ref: 'feature/retries', label: 'feature/retries', group: 'Local branches' }
+  ], before: host ? '' : 'main', after: host ? '' : 'feature/retries' });
   const [canvas, setCanvas] = useState<CanvasState>(emptyCanvas);
   const canvasRef = useRef(canvas); canvasRef.current = canvas;
   const graphRef = useRef(graph); graphRef.current = graph;
@@ -72,6 +94,13 @@ function Workspace() {
   const [busy, setBusy] = useState('Opening review workspace…');
   const [error, setError] = useState('');
   const [showScope, setShowScope] = useState(false);
+  const [branchWait, setBranchWait] = useState(false);
+  useEffect(() => {
+    if (!host || branches.options.length) { setBranchWait(false); return; }
+    post({ type: 'getBranches' });
+    const retry = window.setTimeout(() => { setBranchWait(true); post({ type: 'getBranches' }); }, 3000);
+    return () => window.clearTimeout(retry);
+  }, [branches.options.length]);
   const flow = useReactFlow<MapNode>();
   const generation = useRef(0);
   const toggle = useCallback((path: string) => setCanvas(s => ({ ...s, collapsed: s.collapsed.includes(path) ? s.collapsed.filter(p => p !== path) : [...s.collapsed, path] })), []);
@@ -105,9 +134,15 @@ function Workspace() {
   useEffect(() => {
     const receive = (event: MessageEvent<ToWebview>) => {
       const message = event.data;
-      if (message.type === 'loading') { setBusy(message.message); setError(''); }
+      if (message.type === 'branches') setBranches(message.selection);
+      if (message.type === 'loading') {
+        generation.current++;
+        setBusy(message.message); setError(''); setGraph(undefined); setSelected(undefined);
+        setNodes([]); setEdges([]);
+      }
       if (message.type === 'error') { setError(message.message); setBusy(''); }
       if (message.type === 'graph') {
+        if (message.selection) setBranches(message.selection);
         generation.current++; setGraph(message.graph); setSelected(undefined); setBusy(''); setError('');
         const state = message.state ?? emptyCanvas(); setCanvas(state);
         if (Object.keys(state.positions).length) setNodes(makeNodes(message.graph, state));
@@ -122,7 +157,7 @@ function Workspace() {
       receive({ data: { type: 'graph', graph: demo, state: saved } } as MessageEvent<ToWebview>);
     }
     return () => { window.removeEventListener('message', receive); generation.current++; };
-  }, [layout, makeNodes, setNodes]);
+  }, [layout, makeNodes, setNodes, setEdges]);
   useEffect(() => {
     if (!graph) return;
     setNodes(previous => {
@@ -139,13 +174,15 @@ function Workspace() {
   const onConnect = (connection: Connection) => setCanvas(s => ({ ...s, manualEdges: [...s.manualEdges, { id: `manual:${crypto.randomUUID()}`, source: connection.source, target: connection.target, label: 'manual' }] }));
   const current = graph?.nodes.find(n => n.id === selected);
   const focusFile = (path: string) => { void flow.fitView({ nodes: [{ id: fileId(path) }], duration: 350, padding: .3, maxZoom: 1.2 }); };
-  return <main className="workspace"><header className="toolbar"><div className="brand"><span className="brand-mark">z</span><div><strong>zeile</strong><span>REVIEW MAP {host ? '' : '· DEMO'}</span></div></div><div className="comparison"><span>{graph?.repository ?? 'Local workspace'}</span><button type="button" disabled={!host || !!busy} onClick={() => post({ type: 'selectComparison' })}>{graph ? `${graph.baseLabel} → ${graph.headLabel}` : 'Select revisions'} <span>⌄</span></button></div><div className="toolbar-actions"><button type="button" disabled={!graph || !!busy} onClick={() => graph && void layout(graph, canvasRef.current)}>Auto-layout</button><button type="button" disabled={!graph} onClick={() => void flow.fitView({ duration: 300, padding: .15 })}>Fit map</button><button type="button" disabled={!host || !!busy} onClick={() => post({ type: 'refresh' })}>↻ Refresh</button><button type="button" className={showScope ? 'selected' : ''} onClick={() => setShowScope(!showScope)}>Scope & limits</button></div></header>
+  return <main className="workspace"><header className="toolbar"><div className="brand"><span className="brand-mark">z</span><div><strong>zeile</strong><span>REVIEW MAP {host ? '' : '· DEMO'}</span></div></div><div className="comparison"><span>{graph?.repository ?? 'Local workspace'} · committed code only</span><div className="comparison-versions" title="Compare exact committed snapshots. No checkout or fetch.">{(['before', 'after'] as const).map((side, index) => <React.Fragment key={side}>{index > 0 && <span aria-hidden="true">→</span>}<label className="branch-field"><span>{side === 'before' ? 'Before' : 'After'}</span><select aria-label={`${side === 'before' ? 'Before' : 'After'} branch`} value={branches[side]} disabled={!host || !branches.options.length} title={!host ? 'Demo branches. Open the VS Code extension to select real branches.' : 'Select a branch by name. Remote branches use your local copy.'} onChange={event => post({ type: 'changeBranch', side, ref: event.target.value })}>{!branches.options.length && <option value="">Loading branches…</option>}{(['Local branches', 'Remote branches', 'Snapshots'] as const).map(group => branches.options.some(option => option.group === group) && <optgroup key={group} label={group}>{branches.options.filter(option => option.group === group).map(option => <option key={option.ref} value={option.ref}>{option.label}</option>)}</optgroup>)}</select></label></React.Fragment>)}</div></div><div className="toolbar-actions"><button type="button" disabled={!graph || !!busy} onClick={() => graph && void layout(graph, canvasRef.current)}>Auto-layout</button><button type="button" disabled={!graph} onClick={() => void flow.fitView({ duration: 300, padding: .15 })}>Fit map</button><button type="button" disabled={!host || !!busy} onClick={() => post({ type: 'refresh' })}>↻ Refresh</button><button type="button" className={showScope ? 'selected' : ''} onClick={() => setShowScope(!showScope)}>Scope & limits</button></div></header>
+    {!host && <div className="branch-notice">Browser demo — branch selection requires the VS Code extension. Install Zeile 0.1.3 and run “Zeile: Open Review Map” in your repository.</div>}
+    {host && (!branches.options.length || branchWait) && <div className="branch-notice" role="alert">{branchWait ? 'The branch list did not arrive. Retry to reload it independently of the map.' : 'Loading branches from your repository…'} <button type="button" onClick={() => post({ type: 'getBranches' })}>Retry branch list</button></div>}
     <div className="work-area"><nav className="file-rail"><div className="rail-title">CHANGE INDEX <span>{graph?.files.length ?? 0}</span></div>{graph?.files.map(f => <button type="button" key={f.path} className="file-item" title={f.path} onClick={() => f.represented ? focusFile(f.path) : setShowScope(true)}><span className={`file-status ${f.status[0]}`}>{f.status[0]}</span><span>{f.path.split('/').pop()}<small>{f.path.includes('/') ? f.path.slice(0, f.path.lastIndexOf('/')) : 'root'}{!f.represented ? ' · not mapped' : ''}</small></span></button>)}<div className="rail-bottom"><span className="eyebrow">LOCAL BY DESIGN</span><p>No AI. No code uploads.<br/>Git snapshots, not working files.</p></div></nav>
     <section className="canvas-area"><div className="canvas-summary"><span className="eyebrow">{graph?.base.slice(0, 7)} → {graph?.head.slice(0, 7)}</span><h1>Understand the change.</h1><p>{graph?.nodes.filter(n => n.status !== 'context').length ?? 0} changed nodes · {graph?.nodes.filter(n => n.status === 'context').length ?? 0} context nodes · {graph?.edges.length ?? 0} source links</p></div>
       <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={(_, n) => { if (n.type === 'function') setSelected(n.id); }} onNodeDragStop={(_, n, moved) => { generation.current++; setCanvas(s => ({ ...s, positions: { ...s.positions, ...Object.fromEntries((moved.length ? moved : [n]).map(node => [node.id, node.position])) } })); }} onConnect={onConnect} onEdgesDelete={deleted => setCanvas(s => ({ ...s, manualEdges: s.manualEdges.filter(e => !deleted.some(d => d.id === e.id)) }))} fitView minZoom={.12} maxZoom={1.8} deleteKeyCode={['Backspace', 'Delete']} colorMode="dark"><Background gap={24} size={1} color="#2a3640"/><Controls/><MiniMap pannable zoomable nodeColor={n => n.type === 'file' ? '#293944' : '#708b94'}/></ReactFlow>
-      {!busy && graph && !graph.nodes.length && <div className="overlay-card"><h2>No mapped function changes</h2><p>The revisions may be identical or only contain non-code changes. Check the change index and scope.</p><button type="button" disabled={!host} onClick={() => post({ type: 'selectComparison' })}>Choose comparison</button></div>}
-      {busy && <div className="overlay-card"><span className="eyebrow">READING SNAPSHOTS</span><h2>{busy}</h2><p>Your working tree will not be modified.</p></div>}
-      {error && <div className="error-banner" role="alert"><strong>Could not complete operation</strong><p>{error}</p><button type="button" disabled={!host} onClick={() => post({ type: 'selectComparison' })}>Choose revisions</button><button type="button" onClick={() => setError('')}>Dismiss</button></div>}
+      {!busy && graph && !graph.nodes.length && <div className="overlay-card"><h2>No mapped function changes</h2><p>The revisions may be identical or only contain non-code changes. Select another Before or After branch above, or check the change index and scope.</p></div>}
+      {busy && <MappingIndicator key={busy} message={busy}/>}
+      {error && <div className="error-banner" role="alert"><strong>Could not complete operation</strong><p>{error}</p>{host && <button type="button" onClick={() => post({ type: 'showLogs' })}>Show diagnostics</button>}<button type="button" onClick={() => setError('')}>Dismiss</button></div>}
       <footer className="canvas-legend"><span><i className="status-dot modified"/>Modified</span><span><i className="status-dot added"/>Added</span><span><i className="status-dot removed"/>Removed</span><span><i className="status-dot context"/>Context</span><span className="manual-legend">┄ Manual connection</span><span>Drag handles to connect · Delete to remove manual links</span></footer>
     </section>{current && <Inspector key={current.id} node={current} note={canvas.notes[current.id] ?? ''} onNote={value => setCanvas(s => ({ ...s, notes: { ...s.notes, [current.id]: value } }))} close={() => setSelected(undefined)}/>}</div>
     {showScope && <ScopeDialog graph={graph} close={() => setShowScope(false)}/>}

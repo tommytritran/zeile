@@ -32,12 +32,17 @@ export async function changedFiles(repo: string, base: string, head: string): Pr
   return parseChangedFiles(await git(repo, ['diff', '--no-ext-diff', '--no-textconv', '--name-status', '-z', '--find-renames', base, head, '--']));
 }
 export interface Snapshot { sources: Map<string, string>; warnings: string[] }
-export async function readSnapshot(repo: string, commit: string): Promise<Snapshot> {
+export async function readSnapshot(repo: string, commit: string, priorityPaths: string[] = []): Promise<Snapshot> {
   const listing = await git(repo, ['ls-tree', '-r', '-z', '-l', commit]);
   const sources = new Map<string, string>();
   const warnings: string[] = [];
   let total = 0;
-  for (const record of listing.split('\0')) {
+  const priority = new Set(priorityPaths);
+  const records = listing.split('\0').filter(Boolean).sort((a, b) => {
+    const pathA = a.slice(a.indexOf('\t') + 1), pathB = b.slice(b.indexOf('\t') + 1);
+    return Number(priority.has(pathB)) - Number(priority.has(pathA));
+  });
+  for (const record of records) {
     if (!record) continue;
     const tab = record.indexOf('\t');
     const [mode, type, hash, sizeText] = record.slice(0, tab).trim().split(/\s+/);

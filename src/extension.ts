@@ -2,9 +2,13 @@ import * as vscode from 'vscode';
 import { Worker } from 'node:worker_threads';
 import { randomBytes, createHash } from 'node:crypto';
 import { git } from './git';
-import { validCanvas, type CanvasState, type ReviewGraph, type ToWebview } from './model';
+import { validCanvas, type BranchOption, type CanvasState, type ReviewGraph, type ToWebview } from './model';
+import { latestComparison, listBranches, resolveComparison } from './revisions';
 
 export function activate(context: vscode.ExtensionContext): void {
+  const output = vscode.window.createOutputChannel('Zeile');
+  context.subscriptions.push(output, vscode.commands.registerCommand('zeile.showLogs', () => output.show()));
+  const log = (message: string) => output.appendLine(`${new Date().toISOString()} ${message}`);
   const documents = new Map<string, string>();
   context.subscriptions.push(vscode.workspace.registerTextDocumentContentProvider('zeile-source', {
     provideTextDocumentContent: uri => documents.get(uri.toString()) ?? 'Source is no longer available. Reopen the review map.'
@@ -16,18 +20,38 @@ export function activate(context: vscode.ExtensionContext): void {
       const folder = folders.length === 1 ? folders[0] : (await vscode.window.showQuickPick(folders.map(f => ({ label: f.name, folder: f }))))?.folder;
       if (!folder) return;
       const repository = (await git(folder.uri.fsPath, ['rev-parse', '--show-toplevel'])).trim();
+      log(`Zeile ${context.extension.packageJSON.version}: Git access OK. Loading comparison and branch names.`);
+      const initial = await Promise.all([latestComparison(repository), listBranches(repository)]);
+      let comparison = initial[0];
+      let branches = initial[1];
+      log(`Loaded ${branches.length} branch names.`);
+      let beforeChoice = { ref: comparison?.base ?? 'HEAD', label: comparison?.baseLabel ?? 'Current commit' };
+      let afterChoice = { ref: 'HEAD', label: 'Current commit (HEAD)' };
       const panel = vscode.window.createWebviewPanel('zeile.review', 'Zeile · Review Map', vscode.ViewColumn.Active, {
         enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview')]
       });
       const webview = panel.webview;
       const nonce = randomBytes(24).toString('hex');
       const asset = (name: string) => webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview', name));
-      webview.html = `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data:; worker-src blob:;"><link rel="stylesheet" href="${asset('app.css')}"><title>Zeile Review Map</title></head><body><div id="root"></div><script nonce="${nonce}" type="module" src="${asset('app.js')}"></script></body></html>`;
+      const html = `<!doctype html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'nonce-${nonce}'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; img-src ${webview.cspSource} data:; worker-src blob:;"><link rel="stylesheet" href="${asset('app.css')}"><title>Zeile Review Map</title></head><body><div id="root"></div><script nonce="${nonce}" type="module" src="${asset('app.js')}"></script></body></html>`;
       let worker: Worker | undefined;
       let graph: ReviewGraph | undefined;
-      let base = 'HEAD~1', head = 'HEAD', disposed = false, request = 0, storageKey = '';
+      let disposed = false, request = 0, storageKey = '', choosing = false;
+      let analysisTimer: ReturnType<typeof setTimeout> | undefined;
+      let readyReceived = false;
+      const handshakeTimer = setTimeout(() => {
+        if (!readyReceived && !disposed) { log('Webview did not connect within 15 seconds.'); void vscode.window.showWarningMessage('Zeile: the review UI did not connect. Close the review tab, reload VS Code, and reopen it. See Output → Zeile.'); }
+      }, 15000);
       const sourceKeys = new Set<string>();
       const send = (message: ToWebview) => { if (!disposed) void webview.postMessage(message); };
+      const branchSelection = () => {
+        const options: BranchOption[] = [...branches];
+        for (const choice of [beforeChoice, afterChoice]) if (!options.some(option => option.ref === choice.ref)) {
+          options.push({ ...choice, group: 'Snapshots' });
+        }
+        return { options, before: beforeChoice.ref, after: afterChoice.ref };
+      };
+      const sendBranches = () => send({ type: 'branches', selection: branchSelection() });
       const uriFor = (id: string, side: 'before' | 'after') => {
         const node = graph?.nodes.find(n => n.id === id);
         const version = node?.[side];
@@ -37,34 +61,77 @@ export function activate(context: vscode.ExtensionContext): void {
         return uri;
       };
       const load = async () => {
+        if (!comparison) { send({ type: 'error', message: 'There is no previous commit to compare yet. Select different branches in the Before and After dropdowns. Only committed code is included.' }); return; }
+        const { base, head, baseLabel, headLabel } = comparison;
         const generation = ++request;
+        clearTimeout(analysisTimer);
         if (worker) { void worker.terminate(); worker = undefined; }
-        send({ type: 'loading', message: `Reading ${base} → ${head} from Git snapshots…` });
+        send({ type: 'loading', message: `Comparing ${baseLabel} → ${headLabel}…` });
+        log(`Starting analysis ${base.slice(0, 7)} → ${head.slice(0, 7)}.`);
+        const started = Date.now();
         const running = new Worker(vscode.Uri.joinPath(context.extensionUri, 'dist', 'analysis-worker.cjs').fsPath, { workerData: { repository, base, head } });
         worker = running;
+        analysisTimer = setTimeout(() => {
+          if (generation !== request || disposed) return;
+          request++; void running.terminate();
+          log('Analysis exceeded 120 seconds and was stopped.');
+          send({ type: 'error', message: 'Mapping exceeded 2 minutes and was stopped. Branch selection is still available. Use Show diagnostics to inspect startup/Git errors.' });
+        }, 120000);
         running.on('message', (result: { graph?: ReviewGraph; error?: string }) => {
           if (generation !== request || disposed) return;
-          if (result.error || !result.graph) { send({ type: 'error', message: `${result.error ?? 'Analysis failed.'} Choose valid committed revisions; for a first commit, select an existing base branch.` }); return; }
-          graph = result.graph;
+          clearTimeout(analysisTimer);
+          log(`Analysis finished in ${((Date.now() - started) / 1000).toFixed(1)}s: ${result.error ?? `${result.graph?.nodes.length ?? 0} nodes`}`);
+          if (result.error || !result.graph) { send({ type: 'error', message: `${result.error ?? 'Analysis failed.'} Select available branches in the Before and After dropdowns.` }); return; }
+          graph = { ...result.graph, baseLabel, headLabel };
           storageKey = `canvas.${createHash('sha256').update(`${repository}:${graph.base}:${graph.head}`).digest('hex')}`;
           const state = context.workspaceState.get<CanvasState>(storageKey);
-          send({ type: 'graph', graph, state: validCanvas(state) ? state : undefined });
+          send({ type: 'graph', graph, state: validCanvas(state) ? state : undefined, selection: branchSelection() });
         });
-        running.on('error', error => { if (generation === request) send({ type: 'error', message: error.message }); });
-        running.on('exit', code => { if (generation === request && !disposed && code !== 0) send({ type: 'error', message: `Analysis worker stopped (${code}). Try a smaller repository.` }); });
+        running.on('error', error => { if (generation === request) { clearTimeout(analysisTimer); log(`Worker error: ${error.message}`); send({ type: 'error', message: error.message }); } });
+        running.on('exit', code => { if (generation === request && !disposed && code !== 0) { clearTimeout(analysisTimer); log(`Worker exited with code ${code}.`); send({ type: 'error', message: `Analysis worker stopped (${code}). Try a smaller repository.` }); } });
       };
-      panel.onDidDispose(() => { disposed = true; request++; if (worker) void worker.terminate(); for (const key of sourceKeys) documents.delete(key); });
+      panel.onDidDispose(() => { disposed = true; request++; clearTimeout(handshakeTimer); clearTimeout(analysisTimer); if (worker) void worker.terminate(); for (const key of sourceKeys) documents.delete(key); });
       webview.onDidReceiveMessage(async (message: unknown) => {
         if (!message || typeof message !== 'object' || !('type' in message)) return;
         const m = message as Record<string, unknown>;
         try {
-          if (m.type === 'ready' || m.type === 'refresh') await load();
-          if (m.type === 'selectComparison') {
-            const selectedBase = await vscode.window.showInputBox({ title: 'Base Git revision', value: base, prompt: 'Exact snapshot comparison (not merge-base). Example: main, HEAD~1, or commit SHA.' });
-            if (!selectedBase?.trim()) return;
-            const selectedHead = await vscode.window.showInputBox({ title: 'Head Git revision', value: head });
-            if (!selectedHead?.trim()) return;
-            base = selectedBase.trim(); head = selectedHead.trim(); await load();
+          if (m.type === 'showLogs') output.show();
+          if (m.type === 'cancelAnalysis') {
+            request++; clearTimeout(analysisTimer); if (worker) void worker.terminate();
+            log('Analysis canceled by reviewer.');
+            send({ type: 'error', message: 'Mapping canceled. Select branches or click Refresh to try again.' });
+          }
+          if (m.type === 'refresh') {
+            branches = await listBranches(repository);
+            if (comparison?.mode === 'latest' || !comparison) {
+              comparison = await latestComparison(repository);
+              beforeChoice = { ref: comparison?.base ?? 'HEAD', label: comparison?.baseLabel ?? 'Current commit' };
+            } else comparison = await resolveComparison(repository, beforeChoice, afterChoice);
+            sendBranches();
+            await load();
+          }
+          if (m.type === 'ready') { readyReceived = true; clearTimeout(handshakeTimer); log('Webview connected; sending branch names.'); sendBranches(); await load(); }
+          if (m.type === 'getBranches') {
+            branches = await listBranches(repository);
+            sendBranches();
+          }
+          if (m.type === 'changeBranch' && (m.side === 'before' || m.side === 'after') && typeof m.ref === 'string') {
+            if (choosing) return;
+            choosing = true;
+            try {
+              const option = branches.find(branch => branch.ref === m.ref) ?? [beforeChoice, afterChoice].find(choice => choice.ref === m.ref);
+              if (!option) throw new Error('That branch is no longer available. Refresh to reload the branch list.');
+              const before = m.side === 'before' ? option : beforeChoice;
+              const after = m.side === 'after' ? option : afterChoice;
+              const selected = await resolveComparison(repository, before, after);
+              if (disposed) return;
+              beforeChoice = { ref: before.ref, label: before.label };
+              afterChoice = { ref: after.ref, label: after.label };
+              comparison = selected; sendBranches(); await load();
+            } catch (error) {
+              sendBranches();
+              throw error;
+            } finally { choosing = false; }
           }
           if (m.type === 'saveLayout' && storageKey && validCanvas(m.state)) await context.workspaceState.update(storageKey, m.state);
           if (m.type === 'openSource' && typeof m.id === 'string' && (m.revision === 'before' || m.revision === 'after')) {
@@ -75,9 +142,12 @@ export function activate(context: vscode.ExtensionContext): void {
             const before = uriFor(m.id, 'before'), after = uriFor(m.id, 'after');
             if (before && after) await vscode.commands.executeCommand('vscode.diff', before, after, graph?.nodes.find(n => n.id === m.id)?.name, { viewColumn: vscode.ViewColumn.Beside });
           }
-        } catch (error) { send({ type: 'error', message: error instanceof Error ? error.message : 'Could not complete the request.' }); }
+        } catch (error) { const message = error instanceof Error ? error.message : 'Could not complete the request.'; log(`Request failed: ${message}`); send({ type: 'error', message }); }
       });
+      // Register the message bridge before loading scripts that immediately send ready.
+      webview.html = html;
     } catch (error) {
+      log(`Startup failed: ${error instanceof Error ? error.message : String(error)}`);
       void vscode.window.showErrorMessage(`Zeile: ${error instanceof Error ? error.message : 'Could not open repository.'}`);
     }
   }));
