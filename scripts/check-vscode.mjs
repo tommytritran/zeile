@@ -1,4 +1,4 @@
-import { _electron } from '@playwright/test';
+import { _electron, expect } from '@playwright/test';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -27,13 +27,14 @@ try {
     const text = await frame.locator('body').innerText().catch(() => '');
     if (/MAPPING YOUR|Before|REVIEW MAP/.test(text)) {
       console.log('FRAME', frame.url(), text.slice(0, 3500));
-      console.log('SELECTS', await frame.locator('select').evaluateAll(elements => elements.map(e => ({ disabled: e.disabled, value: e.value, options: e.options.length }))));
       const before = frame.getByRole('combobox', { name: 'Before branch' });
       if (await before.count()) {
         if (await before.isDisabled()) throw new Error('Before branch selector is disabled in real VS Code.');
-        await before.selectOption({ label: 'review-base' });
+        await expect(before).toHaveValue('main');
+        await before.fill('review-base');
+        await frame.getByRole('option', { name: 'review-base', exact: true }).click();
         await frame.locator('.function-card').waitFor({ timeout: 30000 });
-        if (await before.inputValue() !== 'refs/heads/review-base') throw new Error('Branch selection did not reach the extension.');
+        await expect(before).toHaveValue('review-base', { timeout: 30000 });
         const after = frame.getByRole('combobox', { name: 'After branch' });
         if (await after.isDisabled()) throw new Error('After branch selector is disabled.');
         verified = true;

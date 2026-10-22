@@ -3,7 +3,8 @@ import { Worker } from 'node:worker_threads';
 import { randomBytes, createHash } from 'node:crypto';
 import { git } from './git';
 import { validCanvas, type BranchOption, type CanvasState, type ReviewGraph, type ToWebview } from './model';
-import { latestComparison, listBranches, resolveComparison } from './revisions';
+import { defaultBeforeBranch, initialComparison, latestComparison, listBranches, resolveComparison } from './revisions';
+import { validExclusions } from './visibility';
 
 export function activate(context: vscode.ExtensionContext): void {
   const output = vscode.window.createOutputChannel('Zeile');
@@ -20,12 +21,16 @@ export function activate(context: vscode.ExtensionContext): void {
       const folder = folders.length === 1 ? folders[0] : (await vscode.window.showQuickPick(folders.map(f => ({ label: f.name, folder: f }))))?.folder;
       if (!folder) return;
       const repository = (await git(folder.uri.fsPath, ['rev-parse', '--show-toplevel'])).trim();
+      const exclusionsKey = `exclusions.${createHash('sha256').update(repository).digest('hex')}`;
+      const sendExclusions = () => {
+        const patterns = context.globalState.get<unknown>(exclusionsKey);
+        void panel.webview.postMessage({ type: 'exclusions', patterns: validExclusions(patterns) ? patterns : [] });
+      };
       log(`Zeile ${context.extension.packageJSON.version}: Git access OK. Loading comparison and branch names.`);
-      const initial = await Promise.all([latestComparison(repository), listBranches(repository)]);
-      let comparison = initial[0];
-      let branches = initial[1];
+      let branches = await listBranches(repository);
+      let comparison = await initialComparison(repository, branches);
       log(`Loaded ${branches.length} branch names.`);
-      let beforeChoice = { ref: comparison?.base ?? 'HEAD', label: comparison?.baseLabel ?? 'Current commit' };
+      let beforeChoice = defaultBeforeBranch(branches) ?? { ref: comparison?.base ?? 'HEAD', label: comparison?.baseLabel ?? 'Current commit' };
       let afterChoice = { ref: 'HEAD', label: 'Current commit (HEAD)' };
       const panel = vscode.window.createWebviewPanel('zeile.review', 'Zeile · Review Map', vscode.ViewColumn.Active, {
         enableScripts: true, localResourceRoots: [vscode.Uri.joinPath(context.extensionUri, 'dist', 'webview')]
@@ -106,11 +111,16 @@ export function activate(context: vscode.ExtensionContext): void {
             if (comparison?.mode === 'latest' || !comparison) {
               comparison = await latestComparison(repository);
               beforeChoice = { ref: comparison?.base ?? 'HEAD', label: comparison?.baseLabel ?? 'Current commit' };
-            } else comparison = await resolveComparison(repository, beforeChoice, afterChoice);
+            } else comparison = await resolveComparison(repository, beforeChoice, afterChoice, true);
             sendBranches();
             await load();
           }
-          if (m.type === 'ready') { readyReceived = true; clearTimeout(handshakeTimer); log('Webview connected; sending branch names.'); sendBranches(); await load(); }
+          if (m.type === 'ready') { readyReceived = true; clearTimeout(handshakeTimer); log('Webview connected; sending branch names.'); sendExclusions(); sendBranches(); await load(); }
+          if (m.type === 'saveExclusions') {
+            if (!validExclusions(m.patterns)) throw new Error('Use at most 100 exclusion names, each between 1 and 200 characters.');
+            await context.globalState.update(exclusionsKey, m.patterns);
+            sendExclusions();
+          }
           if (m.type === 'getBranches') {
             branches = await listBranches(repository);
             sendBranches();

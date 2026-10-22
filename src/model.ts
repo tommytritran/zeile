@@ -26,9 +26,11 @@ export type ToHost =
   | { type: 'ready' } | { type: 'refresh' } | { type: 'getBranches' } | { type: 'showLogs' } | { type: 'cancelAnalysis' }
   | { type: 'changeBranch'; side: 'before' | 'after'; ref: string }
   | { type: 'saveLayout'; state: CanvasState }
+  | { type: 'saveExclusions'; patterns: string[] }
   | { type: 'openSource'; id: string; revision: 'before' | 'after' }
   | { type: 'openDiff'; id: string };
 export type ToWebview =
+  | { type: 'exclusions'; patterns: string[] }
   | { type: 'branches'; selection: BranchSelection }
   | { type: 'loading'; message: string }
   | { type: 'error'; message: string }

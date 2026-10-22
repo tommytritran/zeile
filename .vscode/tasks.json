@@ -1,4 +1,21 @@
 {
   "version": "2.0.0",
-  "tasks": [{ "label": "Build Zeile", "type": "npm", "script": "build", "problemMatcher": [] }]
+  "tasks": [
+    { "label": "Build Zeile", "type": "npm", "script": "build", "problemMatcher": [] },
+    {
+      "label": "Watch Zeile", "type": "npm", "script": "watch", "isBackground": true,
+      "problemMatcher": {
+        "owner": "zeile-build",
+        "pattern": { "regexp": "^(.+):(\\d+):(\\d+): (.*)$", "file": 1, "line": 2, "column": 3, "message": 4 },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^\\[zeile-watch\\] building",
+          "endsPattern": "^\\[zeile-watch\\] ready$"
+        }
+      },
+      "presentation": { "reveal": "silent", "panel": "dedicated" },
+      "runOptions": { "instanceLimit": 1 }
+    },
+    { "label": "Typecheck Zeile", "type": "npm", "script": "typecheck:watch", "isBackground": true, "problemMatcher": "$tsc-watch" }
+  ]
 }

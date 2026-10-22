@@ -37,9 +37,25 @@ export async function latestComparison(repository: string): Promise<Comparison |
   return { base: parents[1], head: parents[0], baseLabel: 'Before latest commit', headLabel: 'Latest commit', mode: 'latest' };
 }
 
-export async function resolveComparison(repository: string, before: { ref: string; label: string }, after: { ref: string; label: string }): Promise<Comparison> {
+export function defaultBeforeBranch(branches: BranchOption[]): BranchOption | undefined {
+  for (const ref of ['refs/heads/main', 'refs/heads/master', 'refs/remotes/origin/main', 'refs/remotes/origin/master']) {
+    const branch = branches.find(option => option.ref === ref);
+    if (branch) return branch;
+  }
+  return undefined;
+}
+
+export async function initialComparison(repository: string, branches: BranchOption[]): Promise<Comparison | undefined> {
+  const before = defaultBeforeBranch(branches);
+  if (!before) return latestComparison(repository);
+  const [base, head] = await Promise.all([resolveCommit(repository, before.ref), resolveCommit(repository, 'HEAD')]);
+  // On main/master itself, start with an honest empty comparison, not its parent.
+  return { base, head, baseLabel: before.label, headLabel: 'Current commit (HEAD)', mode: 'snapshots' };
+}
+
+export async function resolveComparison(repository: string, before: { ref: string; label: string }, after: { ref: string; label: string }, allowIdentical = false): Promise<Comparison> {
   const [base, head] = await Promise.all([resolveCommit(repository, before.ref), resolveCommit(repository, after.ref)]);
-  if (base === head) throw new Error('These choices point to the same commit. Pick a different Before or After version.');
+  if (base === head && !allowIdentical) throw new Error('These choices point to the same commit. Pick a different Before or After version.');
   return { base, head, baseLabel: before.label, headLabel: after.label, mode: 'snapshots' };
 }
 

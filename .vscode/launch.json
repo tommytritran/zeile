@@ -3,6 +3,6 @@
   "configurations": [{
     "name": "Run Zeile extension", "type": "extensionHost", "request": "launch",
     "args": ["--extensionDevelopmentPath=${workspaceFolder}"],
-    "outFiles": ["${workspaceFolder}/dist/**/*.cjs"], "preLaunchTask": "Build Zeile"
+    "outFiles": ["${workspaceFolder}/dist/**/*.cjs"], "preLaunchTask": "Watch Zeile"
   }]
 }

@@ -1,0 +1,23 @@
+.branch-picker { position: relative; }
+.branch-picker > label { color: #8196a2; font-size: 10px; flex-shrink: 0; }
+.branch-input-wrap { position: relative; min-width: 0; width: 100%; }
+.branch-picker input { width: 100%; min-width: 0; padding: 6px 24px 6px 8px; border: 1px solid #40535f; border-radius: 5px; background: #1b252d; color: var(--amber); font: inherit; font-size: 11px; text-overflow: ellipsis; }
+.branch-picker input:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.branch-picker input:disabled { opacity: .65; }
+.branch-chevron { pointer-events: none; position: absolute; right: 8px; top: 4px; color: #8196a2; }
+.branch-popup { position: absolute; top: calc(100% + 7px); left: 0; min-width: 300px; width: max(100%, 340px); max-width: 80vw; background: #17222b; border: 1px solid #40535f; border-radius: 6px; box-shadow: 0 14px 32px #0007; z-index: 20; overflow: hidden; }
+.branch-popup [role=listbox] { max-height: min(360px, 55vh); overflow-y: auto; }
+.branch-popup fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.branch-popup button[role=option] { width: 100%; border: 0; border-radius: 0; background: transparent; text-align: left; }
+.branch-group { color: #8aa0ac; font-size: 9px; text-transform: uppercase; letter-spacing: 1px; padding: 12px 12px 6px; }
+.branch-popup [role=option] { display: flex; justify-content: space-between; gap: 12px; cursor: pointer; padding: 9px 12px; font-size: 12px; color: #d7e2e7; overflow-wrap: anywhere; }
+.branch-popup [role=option][data-active=true] { background: #30424e; outline: 1px solid #617887; outline-offset: -1px; }
+.branch-popup [role=option][aria-selected=true] { color: var(--amber); }
+.branch-results { border-top: 1px solid #34434d; color: #9db0ba; padding: 10px 12px; font-size: 10px; }
+.exclusions-dialog { width: 600px; }
+.exclusions-dialog textarea { display: block; width: 100%; resize: vertical; margin-top: 10px; border: 1px solid #40535f; border-radius: 5px; background: #111a21; color: #d7e2e7; padding: 12px; font-family: var(--vscode-editor-font-family, monospace); }
+.exclusion-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 20px; }
+.exclusion-actions > :first-child { margin-right: auto; }
+.exclusion-notice { position: absolute; bottom: 55px; left: 20px; z-index: 4; background: #30291df2; color: #e3c48a; border: 1px solid #635334; border-radius: 5px; padding: 9px 12px; font-size: 11px; }
+.exclusion-notice button { padding: 3px 7px; margin-left: 10px; }
+.file-item.excluded { opacity: .7; }
