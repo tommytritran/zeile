@@ -32,6 +32,66 @@ test('focused queue starts with changed code and reveals source neighbors on dem
   await expect(page.locator('.exploration-status')).toContainText('0 callers revealed · 1 already shown');
 });
 
+test('selected function highlights only its directed source paths and clears on demand', async ({ page }) => {
+  await page.evaluate(() => {
+    const ids = ['root', 'middle', 'leaf', 'unrelated'];
+    window.postMessage({ type: 'graph', graph: { repository: 'paths', base: 'a', head: 'b', baseLabel: 'main', headLabel: 'feature', warnings: [], unresolvedCalls: 0,
+      files: ids.map(id => ({ path: `${id}.ts`, status: 'M', represented: true })),
+      nodes: ids.map(id => ({ id, name: id, file: `${id}.ts`, kind: 'function', status: 'modified', after: { path: `${id}.ts`, line: 1, code: `function ${id}() {}`, signature: '()' } })),
+      edges: [{ id: 'root-middle', source: 'root', target: 'middle', revision: 'both', kind: 'resolved', label: '' }, { id: 'middle-leaf', source: 'middle', target: 'leaf', revision: 'after', kind: 'declaration', label: '' }, { id: 'side', source: 'unrelated', target: 'leaf', revision: 'both', kind: 'resolved', label: '' }]
+    } }, '*');
+  });
+  await page.locator('.queue-item').filter({ hasText: 'middle' }).click();
+  await expect(page.locator('.react-flow__edge.reference-highlight')).toHaveCount(2);
+  await expect(page.locator('.react-flow__edge.reference-muted')).toHaveCount(1);
+  await expect(page.locator('[data-id="unrelated"]')).toHaveClass(/reference-muted/);
+  await expect(page.locator('[data-id="file:leaf.ts"]')).toHaveClass(/reference-related/);
+  await expect(page.locator('.reference-notice')).toContainText('2 source links');
+  await page.locator('[data-id="file:leaf.ts"]').getByTitle('Collapse file').click();
+  await expect(page.locator('.react-flow__edge.reference-highlight')).toHaveCount(2);
+  await page.getByRole('button', { name: 'Clear highlight', exact: true }).click();
+  await expect(page.locator('.reference-highlight')).toHaveCount(0);
+  await expect(page.locator('.reference-muted')).toHaveCount(0);
+  await expect(page.locator('.inspector')).toHaveCount(0);
+});
+
+test('architecture arrangement orders backend roles without inventing connections', async ({ page }) => {
+  await page.evaluate(() => {
+    const files = ['api/controllers/orders.ts', 'api/services/orders.ts', 'api/connectors/sql.ts', 'web/pages/orders.tsx', 'web/components/button.tsx'];
+    window.postMessage({ type: 'graph', graph: { repository: 'layers', base: 'a', head: 'b', baseLabel: 'main', headLabel: 'feature', warnings: [], unresolvedCalls: 0, edges: [],
+      files: files.map(path => ({ path, status: 'M', represented: true })), nodes: files.map((file, index) => ({ id: `layer-${index}`, name: `layer${index}`, file, kind: 'function', status: 'modified', after: { path: file, line: 1, code: 'function value() {}', signature: '()' } }))
+    } }, '*');
+  });
+  await expect(page.locator('.function-card')).toHaveCount(5);
+  await page.getByRole('combobox', { name: 'Layout mode' }).selectOption('architecture');
+  const positions = await page.locator('.react-flow__node-file').evaluateAll(elements => Object.fromEntries(elements.map(element => {
+    const transform = (element as HTMLElement).style.transform;
+    const numbers = transform.match(/-?\d+(?:\.\d+)?/g)?.map(Number) ?? [];
+    return [element.getAttribute('data-id'), numbers];
+  })));
+  expect(positions['file:api/controllers/orders.ts'][0]).toBeLessThan(positions['file:api/services/orders.ts'][0]);
+  expect(positions['file:api/services/orders.ts'][0]).toBeLessThan(positions['file:api/connectors/sql.ts'][0]);
+  expect(positions['file:web/pages/orders.tsx'][1]).toBeGreaterThan(positions['file:api/controllers/orders.ts'][1]);
+  await expect(page.locator('.react-flow__edge')).toHaveCount(0);
+  await expect(page.locator('.architecture-notice')).toContainText('not execution order');
+  await page.getByRole('combobox', { name: 'Layout mode' }).selectOption('references');
+  await expect(page.locator('.architecture-notice')).toHaveCount(0);
+});
+
+test('keyboard activation of revealed context highlights its source relationships', async ({ page }) => {
+  const context = page.locator('[data-id="save"]');
+  await context.focus();
+  await context.press('Enter');
+  await expect(page.locator('.inspector h2')).toHaveText('saveReceipt');
+  await expect(page.locator('.react-flow__edge.reference-highlight')).toHaveCount(1);
+  await expect(page.locator('[data-id="charge"]')).toHaveClass(/reference-muted/);
+  await page.getByRole('button', { name: 'Clear highlight', exact: true }).click();
+  await context.focus();
+  await context.press('Space');
+  await expect(page.locator('.inspector h2')).toHaveText('saveReceipt');
+  await expect(page.locator('.reference-notice')).toContainText('1 source links');
+});
+
 test('review queue resizes and expanded implementation follows its width', async ({ page }) => {
   const panel = page.locator('.queue-panel');
   const handle = page.getByRole('button', { name: 'Resize review queue', exact: true });
@@ -449,9 +509,9 @@ test('branch search handles many options, no matches, keyboard and cancellation 
   const before = page.getByRole('combobox', { name: 'Before branch' });
   await expect(before).toHaveValue('main');
   await before.click();
-  await expect(page.getByRole('option')).toHaveCount(37);
+  await expect(page.getByRole('listbox').getByRole('option')).toHaveCount(37);
   await before.fill('BRANCH-34');
-  await expect(page.getByRole('option')).toHaveCount(1);
+  await expect(page.getByRole('listbox').getByRole('option')).toHaveCount(1);
   await before.press('ArrowDown');
   await expect(before).toHaveAttribute('aria-activedescendant', /option-0$/);
   await before.press('Enter');

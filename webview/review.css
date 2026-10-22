@@ -29,3 +29,18 @@
 .relationships button { font-size: 10px; }
 .relationships p { font-size: 10px; line-height: 1.5; color: #9db0ba; margin: 8px 0 0; }
 .exploration-status { position: absolute; bottom: 95px; left: 20px; z-index: 4; padding: 8px 10px; border: 1px solid #40535f; border-radius: 5px; background: #172129ed; color: #a1b3bd; font-size: 10px; max-width: calc(100% - 40px); }
+.react-flow__node-function.reference-muted .function-card { opacity: .3; }
+.react-flow__node-file.reference-muted { background: #15202980; border-color: #34434d; }
+.react-flow__node-file.reference-muted .file-heading { opacity: .4; }
+.react-flow__node-function.reference-related .function-card { border-color: #ad955f; opacity: 1; }
+.react-flow__node-file.reference-related { border-color: #ad955f; }
+.react-flow__edge.reference-muted { opacity: .18; }
+.react-flow__edge.reference-muted.selected { opacity: 1; }
+.react-flow__edge.reference-highlight .react-flow__edge-path { filter: drop-shadow(0 0 3px #e3b86a80); }
+.reference-notice { padding: 8px 12px; border: 1px solid #756542; border-radius: 5px; background: #24251fee; color: #dfca9e; font-size: 10px; line-height: 1.5; }
+.reference-notice button { margin-left: 10px; padding: 3px 7px; font-size: 10px; }
+.canvas-summary .reference-notice { pointer-events: auto; max-width: 440px; }
+.architecture-role { display: block; margin-top: 4px; font-size: 8px; font-weight: normal; color: #a1b3bd; }
+.layout-picker { display: flex; flex-direction: column; gap: 3px; font-size: 9px; color: #9db0ba; }
+.layout-picker select { max-width: 130px; background: #1b252d; color: #d7e2e7; border: 1px solid #40535f; border-radius: 4px; padding: 4px; font-size: 10px; }
+.architecture-notice { font-size: 10px; color: #b4c5d0; line-height: 1.6; background: #172129ed; padding: 8px; border-left: 2px solid #ad955f; }

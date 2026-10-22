@@ -28,3 +28,27 @@ export function focusedGraph(graph: ReviewGraph, exclusions: string[], includeTe
   const ids = new Set(nodes.map(node => node.id));
   return { ...eligible, nodes, edges: eligible.edges.filter(edge => ids.has(edge.source) && ids.has(edge.target)) };
 }
+
+/** Traverse each snapshot independently: never join Before-only and After-only hops. */
+export function referencePaths(graph: ReviewGraph, selected: string | undefined): { nodes: Set<string>; edges: Set<string> } | undefined {
+  if (!selected || !graph.nodes.some(node => node.id === selected)) return undefined;
+  const nodes = new Set([selected]), edges = new Set<string>();
+  const visibleIds = new Set(graph.nodes.map(node => node.id));
+  for (const revision of ['before', 'after'] as const) {
+    const eligible = graph.edges.filter(edge => (edge.revision === revision || edge.revision === 'both') && visibleIds.has(edge.source) && visibleIds.has(edge.target));
+    for (const direction of ['callers', 'dependencies'] as const) {
+      const adjacency = new Map<string, typeof eligible>();
+      for (const edge of eligible) {
+        const from = direction === 'callers' ? edge.target : edge.source;
+        const list = adjacency.get(from) ?? []; list.push(edge); adjacency.set(from, list);
+      }
+      const visited = new Set([selected]), queue = [selected];
+      for (let i = 0; i < queue.length; i++) for (const edge of adjacency.get(queue[i]) ?? []) {
+        const next = direction === 'callers' ? edge.source : edge.target;
+        edges.add(edge.id); nodes.add(next);
+        if (!visited.has(next)) { visited.add(next); queue.push(next); }
+      }
+    }
+  }
+  return { nodes, edges };
+}

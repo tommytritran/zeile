@@ -10,9 +10,10 @@ import { tags } from '@lezer/highlight';
 import { MergeView } from '@codemirror/merge';
 import { emptyCanvas, validCanvas, type BranchSelection, type CanvasState, type ReviewGraph, type ReviewNode, type SourceVersion, type ToHost, type ToWebview } from '../src/model';
 import { isExcluded, validExclusions, visibleGraph } from '../src/visibility';
-import { focusedGraph, isReviewChange, relatedNodes, type RelationshipDirection } from '../src/review-focus';
+import { focusedGraph, isReviewChange, referencePaths, relatedNodes, type RelationshipDirection } from '../src/review-focus';
 import { ReviewQueue } from './ReviewQueue';
 import { ResizableQueue } from './ResizableQueue';
+import { architecturePositions, architectureRole } from '../src/architecture';
 import { BranchPicker } from './BranchPicker';
 import { ExclusionsDialog } from './ExclusionsDialog';
 import '@xyflow/react/dist/style.css';
@@ -36,13 +37,13 @@ const demo: ReviewGraph = {
   ],
   edges: [{ id: 'call1', source: 'checkout', target: 'charge', revision: 'both', kind: 'resolved', label: 'source reference' }, { id: 'call2', source: 'checkout', target: 'save', revision: 'both', kind: 'resolved', label: 'source reference' }]
 };
-type MapNode = Node<{ label: string; signature?: string; status?: string; count?: number; collapsed?: boolean; toggle?: () => void; pinned?: boolean; pin?: () => void }, 'function' | 'file'>;
+type MapNode = Node<{ label: string; signature?: string; status?: string; count?: number; collapsed?: boolean; toggle?: () => void; pinned?: boolean; pin?: () => void; role?: string }, 'function' | 'file'>;
 const fileId = (path: string) => `file:${path}`;
 function FunctionNode({ data, selected }: NodeProps<MapNode>) {
   return <div className={`function-card ${data.status} ${selected ? 'active' : ''}`}><Handle type="target" position={Position.Left}/><div className="node-heading"><span className={`status-dot ${data.status}`}/><strong>{data.label}</strong><small>{data.status}</small></div><div className="signature">{data.signature}</div><Handle type="source" position={Position.Right}/></div>;
 }
 function FileNode({ data }: NodeProps<MapNode>) {
-  return <div className="file-heading"><Handle type="target" position={Position.Left}/><span>▤</span><strong title={data.label}>{data.label}</strong><span className="file-count">{data.count}</span><button type="button" className={`nodrag icon-button ${data.pinned ? 'selected' : ''}`} title={data.pinned ? 'Unpin layout position' : 'Pin layout position'} onClick={data.pin}>⌖</button><button type="button" className="nodrag icon-button" title={data.collapsed ? 'Expand file' : 'Collapse file'} onClick={data.toggle}>{data.collapsed ? '+' : '−'}</button><Handle type="source" position={Position.Right}/></div>;
+  return <div className="file-heading"><Handle type="target" position={Position.Left}/><span>▤</span><strong title={`${data.label}\nFolder hint: ${data.role} (not execution order)`}>{data.label}<small className="architecture-role">{data.role} · folder hint</small></strong><span className="file-count">{data.count}</span><button type="button" className={`nodrag icon-button ${data.pinned ? 'selected' : ''}`} title={data.pinned ? 'Unpin layout position' : 'Pin layout position'} onClick={data.pin}>⌖</button><button type="button" className="nodrag icon-button" title={data.collapsed ? 'Expand file' : 'Collapse file'} onClick={data.toggle}>{data.collapsed ? '+' : '−'}</button><Handle type="source" position={Position.Right}/></div>;
 }
 const nodeTypes = { function: FunctionNode, file: FileNode };
 const editorTheme = EditorView.theme({ '&': { backgroundColor: '#141a20', color: '#d5dfe4', height: '100%', fontSize: '12px' }, '.cm-content': { fontFamily: 'var(--vscode-editor-font-family, ui-monospace, monospace)', padding: '16px 0' }, '.cm-gutters': { backgroundColor: '#11171d', color: '#647783', border: 'none' }, '.cm-scroller': { overflow: 'auto' } }, { dark: true });
@@ -148,6 +149,8 @@ function MappingIndicator({ message }: { message: string }) {
 }
 
 function Workspace() {
+  const [layoutMode, setLayoutMode] = useState<'references' | 'architecture'>('references');
+  const layoutModeRef = useRef(layoutMode); layoutModeRef.current = layoutMode;
   const [inspectorWidth, setInspectorWidth] = useState<number>();
   const [queueWidth, setQueueWidth] = useState<number>();
   const [graph, setGraph] = useState<ReviewGraph>();
@@ -188,11 +191,12 @@ function Workspace() {
   const pin = useCallback((id: string) => setCanvas(s => ({ ...s, pinned: s.pinned.includes(id) ? s.pinned.filter(p => p !== id) : [...s.pinned, id] })), []);
   const makeNodes = useCallback((g: ReviewGraph, state: CanvasState): MapNode[] => {
     const files = [...new Set(g.nodes.map(n => n.file))];
+    const hints = layoutModeRef.current === 'architecture' ? architecturePositions(files.map(path => ({ id: fileId(path), path, height: state.collapsed.includes(path) ? 54 : 74 + g.nodes.filter(node => node.file === path).length * 92 })), Object.fromEntries(files.filter(path => state.positions[fileId(path)]).map(path => [fileId(path), state.positions[fileId(path)]]))) : {};
     return files.flatMap((path, i) => {
       const children = g.nodes.filter(n => n.file === path);
       const collapsed = state.collapsed.includes(path);
       return [
-        { id: fileId(path), type: 'file' as const, position: state.positions[fileId(path)] ?? { x: (i % 3) * 440, y: Math.floor(i / 3) * 400 }, style: { width: 370, height: collapsed ? 54 : 74 + children.length * 92 }, data: { label: path, count: children.length, collapsed, toggle: () => toggle(path), pinned: state.pinned.includes(fileId(path)), pin: () => pin(fileId(path)) }, dragHandle: '.file-heading' },
+        { id: fileId(path), type: 'file' as const, position: state.positions[fileId(path)] ?? hints[fileId(path)] ?? { x: (i % 3) * 440, y: Math.floor(i / 3) * 400 }, style: { width: 370, height: collapsed ? 54 : 74 + children.length * 92 }, data: { label: path, role: architectureRole(path).label, count: children.length, collapsed, toggle: () => toggle(path), pinned: state.pinned.includes(fileId(path)), pin: () => pin(fileId(path)) }, dragHandle: '.file-heading' },
         ...children.map((n, index): MapNode => ({ id: n.id, type: 'function', parentId: fileId(path), extent: 'parent', hidden: collapsed, position: state.positions[n.id] ?? { x: 16, y: 58 + index * 92 }, style: { width: 338, height: 76 }, data: { label: n.name, signature: (n.after ?? n.before)?.signature, status: n.status } }))
       ].map(n => ({ ...n, deletable: false }));
     });
@@ -204,6 +208,12 @@ function Workspace() {
     const initial = makeNodes(g, state);
     try {
       const parents = initial.filter(n => !n.parentId);
+      if (layoutModeRef.current === 'architecture') {
+        const pinned = Object.fromEntries(parents.filter(node => state.pinned.includes(node.id)).map(node => [node.id, node.position]));
+        const positions = architecturePositions(parents.map(node => ({ id: node.id, path: node.data.label, height: Number(node.style?.height) })), pinned);
+        setCanvas(current => ({ ...current, positions: { ...current.positions, ...positions } }));
+        return;
+      }
       const elk = new ELK();
       const result = await elk.layout({ id: 'root', layoutOptions: { 'elk.algorithm': 'layered', 'elk.direction': 'RIGHT', 'elk.spacing.nodeNode': '70', 'elk.layered.spacing.nodeNodeBetweenLayers': '100' }, children: parents.map(n => ({ id: n.id, width: Number(n.style?.width), height: Number(n.style?.height) })), edges: g.edges.filter(e => g.nodes.find(n => n.id === e.source)?.file !== g.nodes.find(n => n.id === e.target)?.file).map(e => ({ id: e.id, sources: [fileId(g.nodes.find(n => n.id === e.source)!.file)], targets: [fileId(g.nodes.find(n => n.id === e.target)!.file)] })) });
       if (run !== generation.current) return;
@@ -250,10 +260,14 @@ function Workspace() {
   useEffect(() => {
     if (!shownGraph) return;
     const graph = shownGraph;
+    const paths = referencePaths(graph, selected);
+    const relatedFiles = new Set(graph.nodes.filter(node => paths?.nodes.has(node.id)).map(node => fileId(node.file)));
     setNodes(previous => {
-      const fresh = makeNodes(graph, canvas);
+      const fresh = makeNodes(graph, { ...canvas, positions: { ...Object.fromEntries(previous.map(node => [node.id, node.position])), ...canvas.positions } });
       const known = new Map(previous.map(node => [node.id, node.position]));
-      const placed = fresh.map(node => ({ ...node, deletable: false, selected: node.id === selected, position: canvas.positions[node.id] ?? known.get(node.id) ?? node.position }));
+      const placed = fresh.map(node => ({ ...node, deletable: false, selected: node.id === selected,
+        className: paths ? (node.parentId ? paths.nodes.has(node.id) : relatedFiles.has(node.id)) ? 'reference-related' : 'reference-muted' : undefined,
+        position: canvas.positions[node.id] ?? known.get(node.id) ?? node.position }));
       for (const parent of placed.filter(node => !node.parentId)) {
         const children = placed.filter(node => node.parentId === parent.id);
         const reserved = children.filter(node => canvas.positions[node.id] || known.has(node.id));
@@ -267,15 +281,24 @@ function Workspace() {
       return placed;
     });
     const groupFor = (id: string) => { const n = graph.nodes.find(n => n.id === id); return n && canvas.collapsed.includes(n.file) ? fileId(n.file) : id; };
-    const sourceEdges: Edge[] = graph.edges.map(e => ({ id: e.id, source: groupFor(e.source), target: groupFor(e.target), label: e.revision === 'both' ? undefined : e.revision, data: { manual: false }, deletable: false, style: { stroke: e.revision === 'before' ? '#d88080' : e.revision === 'after' ? '#5fc9b5' : '#617887', strokeDasharray: e.kind === 'declaration' ? '5 4' : undefined }, markerEnd: { type: 'arrowclosed' as const, color: '#78909c' } })).filter(e => e.source !== e.target);
+    const sourceEdges: Edge[] = graph.edges.map(e => {
+      const highlighted = !!paths?.edges.has(e.id);
+      const color = e.revision === 'before' ? '#d88080' : e.revision === 'after' ? '#5fc9b5' : highlighted ? '#f0cc88' : '#617887';
+      return { id: e.id, source: groupFor(e.source), target: groupFor(e.target), label: e.revision === 'both' ? undefined : e.revision,
+        className: paths ? highlighted ? 'reference-highlight' : 'reference-muted' : undefined,
+        data: { manual: false }, deletable: false, zIndex: highlighted ? 2 : 0,
+        style: { stroke: color, strokeWidth: highlighted ? 3 : 1.5, strokeDasharray: e.kind === 'declaration' ? '5 4' : undefined },
+        markerEnd: { type: 'arrowclosed' as const, color } };
+    }).filter(e => e.source !== e.target);
     const visibleIds = new Set(graph.nodes.flatMap(node => [node.id, fileId(node.file)]));
-    const manual: Edge[] = canvas.manualEdges.filter(e => visibleIds.has(e.source) && visibleIds.has(e.target)).map(e => ({ ...e, source: groupFor(e.source), target: groupFor(e.target), label: e.label || 'manual', data: { manual: true }, style: { stroke: '#e3b86a', strokeDasharray: '4 5' } }));
+    const manual: Edge[] = canvas.manualEdges.filter(e => visibleIds.has(e.source) && visibleIds.has(e.target)).map(e => ({ ...e, source: groupFor(e.source), target: groupFor(e.target), label: e.label || 'manual', className: paths ? 'reference-muted' : undefined, data: { manual: true }, style: { stroke: '#e3b86a', strokeDasharray: '4 5' } }));
     setEdges([...sourceEdges, ...manual]);
     const timer = setTimeout(() => { if (host) post({ type: 'saveLayout', state: canvas }); else localStorage.setItem('zeile-demo', JSON.stringify(canvas)); }, 400);
     return () => clearTimeout(timer);
   }, [canvas, shownGraph, makeNodes, selected, setEdges, setNodes]);
   const onConnect = (connection: Connection) => setCanvas(s => ({ ...s, manualEdges: [...s.manualEdges, { id: `manual:${crypto.randomUUID()}`, source: connection.source, target: connection.target, label: 'manual' }] }));
   const current = shownGraph?.nodes.find(n => n.id === selected);
+  const highlightedPaths = useMemo(() => shownGraph ? referencePaths(shownGraph, selected) : undefined, [shownGraph, selected]);
   const applyExclusions = (patterns: string[]) => {
     generation.current++; exclusionsRef.current = patterns; setExclusions(patterns);
     if (host) post({ type: 'saveExclusions', patterns });
@@ -303,19 +326,18 @@ function Workspace() {
     setCanvas(previous => ({ ...previous, collapsed: previous.collapsed.filter(path => !allowed.some(node => node.file === path)) }));
     setExplorationStatus(`${added.length} ${direction} revealed · ${allowed.length - added.length} already shown · ${related.length - allowed.length} excluded. Before/After source references, not proof of runtime dispatch.`);
   };
-  return <main className="workspace"><header className="toolbar"><div className="brand"><span className="brand-mark">z</span><div><strong>zeile</strong><span>REVIEW MAP {host ? '' : '· DEMO'}</span></div></div><div className="comparison"><span>{graph?.repository ?? 'Local workspace'} · committed code only</span><div className="comparison-versions" title="Compare exact committed snapshots. No checkout or fetch.">{(['before', 'after'] as const).map((side, index) => <React.Fragment key={side}>{index > 0 && <span aria-hidden="true">→</span>}<BranchPicker label={side === 'before' ? 'Before' : 'After'} value={branches[side]} options={branches.options} disabled={!host || !branches.options.length} onChange={ref => post({ type: 'changeBranch', side, ref })}/></React.Fragment>)}</div></div><div className="toolbar-actions"><button type="button" disabled={!graph || !!busy} onClick={() => graph && void layout(graph, canvasRef.current)}>Auto-layout</button><button type="button" disabled={!graph} onClick={() => void flow.fitView({ duration: 300, padding: .15 })}>Fit map</button><button type="button" disabled={!host || !!busy} onClick={() => post({ type: 'refresh' })}>↻ Refresh</button><button type="button" className={exclusions.length ? 'selected' : ''} onClick={() => setShowExclusions(true)}>Exclusions{exclusions.length ? ` (${exclusions.length})` : ''}</button><button type="button" className={showScope ? 'selected' : ''} onClick={() => setShowScope(!showScope)}>Scope & limits</button></div></header>
-    {!host && <div className="branch-notice">Browser demo — branch selection requires the VS Code extension. Install Zeile 0.1.8 and run “Zeile: Open Review Map” in your repository.</div>}
+  return <main className="workspace"><header className="toolbar"><div className="brand"><span className="brand-mark">z</span><div><strong>zeile</strong><span>REVIEW MAP {host ? '' : '· DEMO'}</span></div></div><div className="comparison"><span>{graph?.repository ?? 'Local workspace'} · committed code only</span><div className="comparison-versions" title="Compare exact committed snapshots. No checkout or fetch.">{(['before', 'after'] as const).map((side, index) => <React.Fragment key={side}>{index > 0 && <span aria-hidden="true">→</span>}<BranchPicker label={side === 'before' ? 'Before' : 'After'} value={branches[side]} options={branches.options} disabled={!host || !branches.options.length} onChange={ref => post({ type: 'changeBranch', side, ref })}/></React.Fragment>)}</div></div><div className="toolbar-actions"><><label className="layout-picker">Arrange<select aria-label="Layout mode" value={layoutMode} onChange={event => { const mode = event.target.value === 'architecture' ? 'architecture' : 'references'; generation.current++; layoutModeRef.current = mode; setLayoutMode(mode); if (graph) void layout(graph, canvasRef.current); }}><option value="references">Source links</option><option value="architecture">Architecture hints</option></select></label><button type="button" disabled={!graph || !!busy} onClick={() => graph && void layout(graph, canvasRef.current)}>Auto-layout</button></><button type="button" disabled={!graph} onClick={() => void flow.fitView({ duration: 300, padding: .15 })}>Fit map</button><button type="button" disabled={!host || !!busy} onClick={() => post({ type: 'refresh' })}>↻ Refresh</button><button type="button" className={exclusions.length ? 'selected' : ''} onClick={() => setShowExclusions(true)}>Exclusions{exclusions.length ? ` (${exclusions.length})` : ''}</button><button type="button" className={showScope ? 'selected' : ''} onClick={() => setShowScope(!showScope)}>Scope & limits</button></div></header>
+    {!host && <div className="branch-notice">Browser demo — branch selection requires the VS Code extension. Install Zeile 0.1.9 and run “Zeile: Open Review Map” in your repository.</div>}
     {host && (!branches.options.length || branchWait) && <div className="branch-notice" role="alert">{branchWait ? 'The branch list did not arrive. Retry to reload it independently of the map.' : 'Loading branches from your repository…'} <button type="button" onClick={() => post({ type: 'getBranches' })}>Retry branch list</button></div>}
     <div className="work-area" style={queueWidth ? { '--queue-width': `${queueWidth}px` } as React.CSSProperties : undefined}><button type="button" className="queue-mobile-toggle" aria-expanded={queueOpen} onClick={() => setQueueOpen(!queueOpen)}>{queueOpen ? 'Hide review queue' : 'Review queue'}</button><ResizableQueue open={queueOpen} onWidth={setQueueWidth}><nav className="file-rail" aria-label="Review queue"><ReviewQueue graph={graph} exclusions={exclusions} selected={selected} includeTests={includeTests} includeGenerated={includeGenerated} setTests={value => { generation.current++; setIncludeTests(value); setRevealed([]); setSelected(undefined); }} setGenerated={value => { generation.current++; setIncludeGenerated(value); setRevealed([]); setSelected(undefined); }} select={id => { selectFromQueue(id); setQueueOpen(false); }} editExclusions={() => setShowExclusions(true)} scope={() => setShowScope(true)} reset={() => { generation.current++; setRevealed([]); setSelected(undefined); setExplorationStatus('Exploration reset. Changed files remain visible according to filters.'); }}/></nav></ResizableQueue>
-    <section className="canvas-area"><div className="canvas-summary"><span className="eyebrow">{graph?.base.slice(0, 7)} → {graph?.head.slice(0, 7)}</span><h1>Understand the change.</h1><p>{shownGraph?.nodes.filter(n => isReviewChange(n, shownGraph)).length ?? 0} changed nodes · {shownGraph?.nodes.filter(n => !isReviewChange(n, shownGraph)).length ?? 0} context nodes · {shownGraph?.edges.length ?? 0} source links</p></div>
-      <ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={(_, n) => { if (n.type === 'function') setSelected(n.id); }} onNodeDragStop={(_, n, moved) => { generation.current++; setCanvas(s => ({ ...s, positions: { ...s.positions, ...Object.fromEntries((moved.length ? moved : [n]).map(node => [node.id, node.position])) } })); }} onConnect={onConnect} onEdgesDelete={deleted => setCanvas(s => ({ ...s, manualEdges: s.manualEdges.filter(e => !deleted.some(d => d.id === e.id)) }))} fitView minZoom={.12} maxZoom={1.8} deleteKeyCode={['Backspace', 'Delete']} colorMode="dark"><Background gap={24} size={1} color="#2a3640"/><Controls/><MiniMap pannable zoomable nodeColor={n => n.type === 'file' ? '#293944' : '#708b94'}/></ReactFlow>
+    <section className="canvas-area" onKeyDownCapture={event => { if (event.key !== 'Enter' && event.key !== ' ') return; const target = event.target; if (!(target instanceof HTMLElement) || !target.matches('.react-flow__node-function')) return; const id = target.dataset.id; if (id) { event.preventDefault(); event.stopPropagation(); setSelected(id); } }}><div className="canvas-summary"><span className="eyebrow">{graph?.base.slice(0, 7)} → {graph?.head.slice(0, 7)}</span><><><h1>Understand the change.</h1>{layoutMode === 'architecture' && <div className="architecture-notice">Folder hints, not execution order<br/>Backend: Entry → Logic → Integration / DB<br/>Frontend: Page/layout → Feature/state → UI / API client<br/>Rows are separate; no inferred frontend/backend link.</div>}</>{highlightedPaths && <div className="reference-notice">{highlightedPaths.edges.size} source links · upstream/downstream in this map.<br/>Before/After traced separately · not runtime or data flow.<button type="button" onClick={() => setSelected(undefined)}>Clear highlight</button></div>}</><p>{shownGraph?.nodes.filter(n => isReviewChange(n, shownGraph)).length ?? 0} changed nodes · {shownGraph?.nodes.filter(n => !isReviewChange(n, shownGraph)).length ?? 0} context nodes · {shownGraph?.edges.length ?? 0} source links</p></div>
+      <ReactFlow nodes={nodes} onPaneClick={() => setSelected(undefined)} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onNodeClick={(_, n) => { if (n.type === 'function') setSelected(n.id); }} onNodeDragStop={(_, n, moved) => { generation.current++; setCanvas(s => ({ ...s, positions: { ...s.positions, ...Object.fromEntries((moved.length ? moved : [n]).map(node => [node.id, node.position])) } })); }} onConnect={onConnect} onEdgesDelete={deleted => setCanvas(s => ({ ...s, manualEdges: s.manualEdges.filter(e => !deleted.some(d => d.id === e.id)) }))} fitView minZoom={.12} maxZoom={1.8} deleteKeyCode={['Backspace', 'Delete']} colorMode="dark"><Background gap={24} size={1} color="#2a3640"/><Controls/><MiniMap pannable zoomable nodeColor={n => n.type === 'file' ? '#293944' : '#708b94'}/></ReactFlow>
       {!busy && shownGraph && !shownGraph.nodes.length && <div className="overlay-card"><h2>{graph?.nodes.length ? 'No changes in the current focus' : 'No mapped function changes'}</h2><p>Enable tests/generated files, edit Exclusions, or inspect the full change index. Unchanged context appears when you expand source relationships.</p></div>}
       {!!hiddenFiles.size && <div className="exclusion-notice">{hiddenFiles.size} files · {graph?.nodes.filter(node => isExcluded(node.file, exclusions)).length} nodes hidden by exclusions<button type="button" onClick={() => setShowExclusions(true)}>Edit exclusions</button></div>}
       {explorationStatus && <output className="exploration-status">{explorationStatus}</output>}
       {busy && <MappingIndicator key={busy} message={busy}/>}
       {error && <div className="error-banner" role="alert"><strong>Could not complete operation</strong><p>{error}</p>{host && <button type="button" onClick={() => post({ type: 'showLogs' })}>Show diagnostics</button>}<button type="button" onClick={() => setError('')}>Dismiss</button></div>}
-      <footer className="canvas-legend"><span><i className="status-dot modified"/>Modified</span><span><i className="status-dot added"/>Added</span><span><i className="status-dot removed"/>Removed</span><span><i className="status-dot context"/>Context</span><span className="manual-legend">┄ Manual connection</span><span>Drag handles to connect · Delete to remove manual links</span></footer>
-    </section>{current && <Inspector key={current.id} node={current} width={inspectorWidth} onWidth={setInspectorWidth} note={canvas.notes[current.id] ?? ''} onNote={value => setCanvas(s => ({ ...s, notes: { ...s.notes, [current.id]: value } }))} close={() => setSelected(undefined)} relationships={<div className="relationships"><div>{(['callers', 'dependencies'] as const).map(direction => <button type="button" key={direction} onClick={() => expand(direction)}>Show {direction} ({graph ? relatedNodes(graph, current.id, direction).length : 0})</button>)}</div><p>Available static source references · method declarations are not guaranteed dispatch. Zero does not mean unused. Expansion is limited to the analyzed neighborhood of changed functions.</p></div>}/>}</div>
+      <footer className="canvas-legend"><span><i className="status-dot modified"/>Modified</span><span><i className="status-dot added"/>Added</span><span><i className="status-dot removed"/>Removed</span><span><i className="status-dot context"/>Context</span><span className="manual-legend">┄ Manual connection</span><span>Drag handles to connect · Delete to remove manual links</span></footer></section>{current && <Inspector key={current.id} node={current} width={inspectorWidth} onWidth={setInspectorWidth} note={canvas.notes[current.id] ?? ''} onNote={value => setCanvas(s => ({ ...s, notes: { ...s.notes, [current.id]: value } }))} close={() => setSelected(undefined)} relationships={<div className="relationships"><div>{(['callers', 'dependencies'] as const).map(direction => <button type="button" key={direction} onClick={() => expand(direction)}>Show {direction} ({graph ? relatedNodes(graph, current.id, direction).length : 0})</button>)}</div><p>Available static source references · method declarations are not guaranteed dispatch. Zero does not mean unused. Expansion is limited to the analyzed neighborhood of changed functions.</p></div>}/>}</div>
     {showScope && <ScopeDialog graph={graph} close={() => setShowScope(false)}/>}
     {showExclusions && <ExclusionsDialog patterns={exclusions} apply={applyExclusions} close={() => setShowExclusions(false)}/>}
   </main>;

@@ -1,6 +1,6 @@
 import { expect, it } from 'vitest';
 import type { ReviewGraph, ReviewNode } from '../src/model';
-import { fileCategory, focusedGraph, isReviewChange, relatedNodes } from '../src/review-focus';
+import { fileCategory, focusedGraph, isReviewChange, referencePaths, relatedNodes } from '../src/review-focus';
 
 const node = (id: string, file: string, status: ReviewNode['status'] = 'modified'): ReviewNode => ({ id, name: id, file, status, kind: 'function' });
 const graph: ReviewGraph = { repository: 'repo', base: 'a', head: 'b', baseLabel: 'main', headLabel: 'feature', warnings: [], unresolvedCalls: 0,
@@ -31,4 +31,30 @@ it('shows test/generated changed nodes only through their filters or explicit re
   expect(focusedGraph(graph, [], true, false, []).nodes.map(node => node.id)).toEqual(['app', 'test', 'rename']);
   expect(focusedGraph(graph, [], false, true, []).nodes.map(node => node.id)).toEqual(['app', 'generated', 'rename']);
   expect(focusedGraph(graph, [], false, false, ['generated']).nodes.map(node => node.id)).toContain('generated');
+});
+
+it('highlights directed ancestors/descendants without walking sideways or bridging revisions', () => {
+  const fixture: ReviewGraph = { ...graph, nodes: ['s', 'a', 'b', 'parent', 'sibling', 'leaf', 'other'].map(id => node(id, `${id}.ts`)), edges: [
+    { id: 'old', source: 's', target: 'a', revision: 'before', kind: 'resolved', label: '' },
+    { id: 'new', source: 'a', target: 'b', revision: 'after', kind: 'resolved', label: '' },
+    { id: 'up', source: 'parent', target: 's', revision: 'both', kind: 'resolved', label: '' },
+    { id: 'side', source: 'parent', target: 'sibling', revision: 'both', kind: 'resolved', label: '' },
+    { id: 'down', source: 's', target: 'leaf', revision: 'both', kind: 'declaration', label: '' },
+    { id: 'other', source: 'other', target: 'leaf', revision: 'both', kind: 'resolved', label: '' }
+  ] };
+  const paths = referencePaths(fixture, 's');
+  expect([...paths!.nodes].sort()).toEqual(['a', 'leaf', 'parent', 's']);
+  expect([...paths!.edges].sort()).toEqual(['down', 'old', 'up']);
+  expect(referencePaths(fixture, 'missing')).toBeUndefined();
+  expect(referencePaths(fixture, undefined)).toBeUndefined();
+});
+it('terminates cycles, retains closing edges and stops at hidden nodes', () => {
+  const fixture: ReviewGraph = { ...graph, nodes: ['a', 'b', 'c'].map(id => node(id, 'same-file.ts')), edges: [
+    { id: 'ab', source: 'a', target: 'b', revision: 'both', kind: 'resolved', label: '' },
+    { id: 'ba', source: 'b', target: 'a', revision: 'both', kind: 'resolved', label: '' },
+    { id: 'hidden', source: 'b', target: 'missing', revision: 'both', kind: 'resolved', label: '' },
+    { id: 'bridge', source: 'missing', target: 'c', revision: 'both', kind: 'resolved', label: '' }
+  ] };
+  expect([...referencePaths(fixture, 'a')!.edges].sort()).toEqual(['ab', 'ba']);
+  expect([...referencePaths(fixture, 'a')!.nodes].sort()).toEqual(['a', 'b']);
 });

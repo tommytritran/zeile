@@ -2,7 +2,7 @@
   "name": "zeile",
   "displayName": "Zeile Review Map",
   "description": "A local, non-AI interactive map for reviewing TypeScript changes.",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publisher": "zeile-local",
   "private": true,
   "type": "module",
