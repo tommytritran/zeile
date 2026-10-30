@@ -1,10 +1,11 @@
 import ts from 'typescript';
 import { posix } from 'node:path';
 import type { ChangedFile, ReviewEdge, ReviewGraph, ReviewNode, SourceVersion } from './model';
-import { changedFiles, readSnapshot, resolveCommit } from './git';
+import { changedFiles, readFileSources, readSnapshot, resolveCommit } from './git';
+import { reviewMetadata } from './review-metadata';
 
-interface Extracted { key: string; path: string; name: string; source: SourceVersion; ast: ts.FunctionLikeDeclaration }
-interface Extraction { functions: Map<string, Extracted>; calls: { source: string; target: string; kind: ReviewEdge['kind'] }[]; unresolved: number; warnings: string[] }
+interface Extracted { key: string; path: string; name: string; parentId?: string; source: SourceVersion; ast: ts.FunctionLikeDeclaration }
+interface Extraction { functions: Map<string, Extracted>; calls: { source: string; target: string; kind: ReviewEdge['kind']; path: string; line: number }[]; unresolved: number; warnings: string[] }
 const sourcePattern = /\.[cm]?[jt]sx?$/;
 function isFunction(node: ts.Node): node is ts.FunctionLikeDeclaration {
   return ts.isFunctionDeclaration(node) || ts.isMethodDeclaration(node) || ts.isArrowFunction(node) || ts.isFunctionExpression(node) || ts.isConstructorDeclaration(node) || ts.isGetAccessor(node) || ts.isSetAccessor(node);
@@ -17,9 +18,11 @@ function declarationName(node: ts.FunctionLikeDeclaration, file: ts.SourceFile):
   if (ts.isExportAssignment(parent)) return 'default';
   if (ts.isFunctionDeclaration(node)) return 'default';
   if (ts.isCallExpression(parent)) {
-    const callee = parent.expression.getText(file);
+    let expression = parent.expression;
+    while (ts.isCallExpression(expression)) expression = expression.expression;
+    const callee = expression.getText(file).slice(0, 60);
     const description = parent.arguments.find(argument => ts.isStringLiteral(argument) || ts.isNoSubstitutionTemplateLiteral(argument));
-    return `${callee} callback${description ? ` [${description.getText(file)}]` : ''}`;
+    return `${callee} callback${description ? ` [${description.getText(file).slice(0, 100)}]` : ''}`;
   }
   if (ts.isJsxExpression(parent) && parent.parent && ts.isJsxAttribute(parent.parent)) return `${parent.parent.name.getText(file)} callback`;
   return 'callback';
@@ -85,8 +88,11 @@ export function extract(sources: Map<string, string>): Extraction {
         const params = node.parameters.map(p => p.getText(file)).join(', ');
         const signature = checker.getSignatureFromDeclaration(node);
         const output = node.type?.getText(file) ?? (signature ? checker.typeToString(checker.getReturnTypeOfSignature(signature)) : 'unknown');
-        functions.set(key, { key, path: relativePath, name, ast: node, source: {
+        let owner: ts.Node | undefined = node.parent;
+        while (owner && !astKeys.has(owner)) owner = owner.parent;
+        functions.set(key, { key, path: relativePath, name, parentId: owner ? astKeys.get(owner) : undefined, ast: node, source: {
           path: relativePath, line: file.getLineAndCharacterOfPosition(node.getStart(file)).line + 1,
+          endLine: file.getLineAndCharacterOfPosition(node.getEnd() - 1).line + 1,
           code: node.getText(file), signature: `(${params}) → ${output}`
         } });
         astKeys.set(node, key);
@@ -109,7 +115,8 @@ export function extract(sources: Map<string, string>): Extraction {
           if (symbol && symbol.flags & ts.SymbolFlags.Alias) symbol = checker.getAliasedSymbol(symbol);
           target = symbol?.declarations?.map(d => astKeys.get(d)).find(Boolean);
         }
-        if (target) calls.push({ source: fn.key, target, kind: ts.isPropertyAccessExpression(node.expression) ? 'declaration' : 'resolved' });
+        if (target) calls.push({ source: fn.key, target, kind: ts.isPropertyAccessExpression(node.expression) ? 'declaration' : 'resolved', path: fn.path,
+          line: node.getSourceFile().getLineAndCharacterOfPosition(node.getStart()).line + 1 });
         else unresolved++;
       }
       ts.forEachChild(node, visit);
@@ -134,15 +141,13 @@ export function compareSources(before: Map<string, string>, after: Map<string, s
     return (needsBefore && !before.has(file.oldPath ?? file.path)) || (needsAfter && !after.has(file.path));
   }).map(file => file.path));
   const all = new Map<string, ReviewNode>();
-  const changed = new Set<string>();
   for (const key of new Set([...oldFunctions.keys(), ...next.functions.keys()])) {
     const previous = oldFunctions.get(key), current = next.functions.get(key);
     const path = current?.path ?? rename.get(previous!.path) ?? previous!.path;
-    if (unavailablePaths.has(path)) continue;
-    const status = !changedPaths.has(path) ? 'context' : !previous ? 'added' : !current ? 'removed' : previous.source.code !== current.source.code ? 'modified' : 'context';
+    const status = unavailablePaths.has(path) || !changedPaths.has(path) ? 'context' : !previous ? 'added' : !current ? 'removed' : previous.source.code !== current.source.code ? 'modified' : 'context';
     all.set(key, { id: key, file: current?.path ?? rename.get(previous!.path) ?? previous!.path, name: current?.name ?? previous!.name,
-      kind: 'function', status, before: previous?.source, after: current?.source });
-    if (status !== 'context' || (changedPaths.has(path) && previous && current && previous.path !== current.path)) changed.add(key);
+      kind: 'function', status, before: previous?.source, after: current?.source,
+      parentId: current ? current.parentId : previous?.parentId ? canonical(previous.parentId) : undefined });
   }
   const edgeMap = new Map<string, ReviewEdge>();
   for (const [revision, result] of [['before', old], ['after', next]] as const) {
@@ -151,15 +156,16 @@ export function compareSources(before: Map<string, string>, after: Map<string, s
       const target = revision === 'before' ? canonical(call.target) : call.target;
       const id = `${source}=>${target}`;
       const existing = edgeMap.get(id);
-      if (existing && existing.revision !== revision) existing.revision = 'both';
-      else edgeMap.set(id, { id, source, target, revision, kind: call.kind,
+      const site = { revision, path: call.path, line: call.line };
+      if (existing) {
+        if (existing.revision !== revision) existing.revision = 'both';
+        existing.sites?.push(site);
+      } else edgeMap.set(id, { id, source, target, revision, kind: call.kind, sites: [site],
         label: call.kind === 'declaration' ? 'method declaration' : 'source reference' });
     }
   }
-  const visible = new Set(changed);
-  for (const edge of edgeMap.values()) if (changed.has(edge.source) || changed.has(edge.target)) { visible.add(edge.source); visible.add(edge.target); }
-  const nodes = [...visible].map(key => all.get(key)!).filter(Boolean);
-  const inventory = files.map(f => ({ ...f }));
+  const nodes = [...all.values()];
+  const inventory = files.map(f => ({ ...f, represented: false }));
   for (const file of inventory) {
     if (unavailablePaths.has(file.path)) continue;
     if (!sourcePattern.test(file.path) && !(file.oldPath && sourcePattern.test(file.oldPath))) continue;
@@ -175,10 +181,10 @@ export function compareSources(before: Map<string, string>, after: Map<string, s
     if (residual(oldCode, old, file.oldPath ?? file.path) !== residual(newCode, next, file.path)) {
       nodes.push({ id: `${file.path}::#module`, file: file.path, name: 'File / module context', kind: 'module',
         status: oldCode === undefined ? 'added' : newCode === undefined ? 'removed' : 'modified',
-        before: oldCode === undefined ? undefined : { path: file.oldPath ?? file.path, line: 1, code: oldCode, signature: 'Full file · includes imports and top-level code' },
-        after: newCode === undefined ? undefined : { path: file.path, line: 1, code: newCode, signature: 'Full file · includes imports and top-level code' } });
+        before: oldCode === undefined ? undefined : { path: file.oldPath ?? file.path, line: 1, endLine: oldCode.split('\n').length, code: oldCode, signature: 'Full file · includes imports and top-level code' },
+        after: newCode === undefined ? undefined : { path: file.path, line: 1, endLine: newCode.split('\n').length, code: newCode, signature: 'Full file · includes imports and top-level code' } });
     }
-    file.represented = nodes.some(node => node.file === file.path);
+    file.represented = nodes.some(node => node.file === file.path && (node.status !== 'context' || Boolean(file.oldPath && file.oldPath !== file.path)));
   }
   const warnings = [...new Set([...old.warnings, ...next.warnings])];
   warnings.push('Best-effort source relationships, not runtime calls. Method edges identify declarations, not guaranteed dispatch targets. DI, events, callbacks and external dependencies may be unresolved.');
@@ -193,6 +199,7 @@ export async function analyzeRepository(repo: string, baseLabel: string, headLab
   const priority = [...new Set(files.flatMap(file => [file.path, ...(file.oldPath ? [file.oldPath] : [])]))];
   const [old, next] = await Promise.all([readSnapshot(repo, base, priority), readSnapshot(repo, head, priority)]);
   const result = compareSources(old.sources, next.sources, files);
-  return { repository: posix.basename(repo), base, head, baseLabel, headLabel, ...result,
+  const [fileSources, metadata] = await Promise.all([readFileSources(repo, base, head, files, old, next), reviewMetadata(repo, base, head)]);
+  return { repository: posix.basename(repo), base, head, baseLabel, headLabel, ...result, fileSources, metadata,
     warnings: [...result.warnings, ...old.warnings, ...next.warnings] };
 }

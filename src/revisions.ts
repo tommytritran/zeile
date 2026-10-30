@@ -2,7 +2,10 @@ import { git, resolveCommit } from './git';
 import type { BranchOption } from './model';
 
 export interface RevisionChoice { ref: string; label: string; description: string; detail: string; group: string }
-export interface Comparison { base: string; head: string; baseLabel: string; headLabel: string; mode: 'latest' | 'snapshots' }
+export interface Comparison {
+  base: string; head: string; baseLabel: string; headLabel: string; mode: 'latest' | 'snapshots';
+  kind?: 'pr' | 'exact'; target?: string; mergeBase?: string;
+}
 
 export async function listRevisions(repository: string): Promise<RevisionChoice[]> {
   const [branches, commits] = await Promise.all([
@@ -34,11 +37,11 @@ export async function latestComparison(repository: string): Promise<Comparison |
   // A root commit has no parent: let the user choose another comparison instead.
   const parents = (await git(repository, ['rev-list', '--parents', '-n', '1', 'HEAD', '--'])).trim().split(/\s+/);
   if (parents.length < 2) return undefined;
-  return { base: parents[1], head: parents[0], baseLabel: 'Before latest commit', headLabel: 'Latest commit', mode: 'latest' };
+  return { base: parents[1], head: parents[0], baseLabel: 'Before latest commit', headLabel: 'Latest commit', mode: 'latest', kind: 'pr', target: parents[1], mergeBase: parents[1] };
 }
 
 export function defaultBeforeBranch(branches: BranchOption[]): BranchOption | undefined {
-  for (const ref of ['refs/heads/main', 'refs/heads/master', 'refs/remotes/origin/main', 'refs/remotes/origin/master']) {
+  for (const ref of ['refs/remotes/origin/main', 'refs/remotes/origin/master', 'refs/heads/main', 'refs/heads/master']) {
     const branch = branches.find(option => option.ref === ref);
     if (branch) return branch;
   }
@@ -48,15 +51,21 @@ export function defaultBeforeBranch(branches: BranchOption[]): BranchOption | un
 export async function initialComparison(repository: string, branches: BranchOption[]): Promise<Comparison | undefined> {
   const before = defaultBeforeBranch(branches);
   if (!before) return latestComparison(repository);
-  const [base, head] = await Promise.all([resolveCommit(repository, before.ref), resolveCommit(repository, 'HEAD')]);
-  // On main/master itself, start with an honest empty comparison, not its parent.
-  return { base, head, baseLabel: before.label, headLabel: 'Current commit (HEAD)', mode: 'snapshots' };
+  return resolveComparison(repository, before, { ref: 'HEAD', label: 'Current commit (HEAD)' }, true);
 }
 
-export async function resolveComparison(repository: string, before: { ref: string; label: string }, after: { ref: string; label: string }, allowIdentical = false): Promise<Comparison> {
-  const [base, head] = await Promise.all([resolveCommit(repository, before.ref), resolveCommit(repository, after.ref)]);
-  if (base === head && !allowIdentical) throw new Error('These choices point to the same commit. Pick a different Before or After version.');
-  return { base, head, baseLabel: before.label, headLabel: after.label, mode: 'snapshots' };
+export async function resolveComparison(repository: string, before: { ref: string; label: string }, after: { ref: string; label: string }, allowIdentical = false, kind: 'pr' | 'exact' = 'pr'): Promise<Comparison> {
+  const [target, head] = await Promise.all([resolveCommit(repository, before.ref), resolveCommit(repository, after.ref)]);
+  if (target === head && !allowIdentical) throw new Error('These choices point to the same commit. Pick a different Before or After version.');
+  if (kind === 'exact') return { base: target, target, head, baseLabel: before.label, headLabel: after.label, mode: 'snapshots', kind };
+  let bases: string[];
+  try { bases = (await git(repository, ['merge-base', '--all', target, head])).trim().split(/\s+/).filter(Boolean); }
+  catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`No merge base could be resolved: ${reason}. Check Git access, choose related branches, or select exact comparison.`);
+  }
+  if (bases.length !== 1) throw new Error('A unique merge base is required for PR comparison. Choose related branches or select exact comparison.');
+  return { base: bases[0], target, head, mergeBase: bases[0], baseLabel: `${before.label} (merge-base)`, headLabel: after.label, mode: 'snapshots', kind };
 }
 
 export async function refreshComparison(repository: string, comparison: Comparison | undefined): Promise<Comparison | undefined> {

@@ -20,7 +20,8 @@ describe('snapshot analysis', () => {
   });
   it('does not treat incomplete snapshot coverage as deleted source', () => {
     const result = compareSources(source({ 'a.ts': 'function a() { return 1; }', 'untouched.ts': 'function context() {}' }), source({}), [{ path: 'a.ts', status: 'M', represented: false }]);
-    expect(result.nodes).toHaveLength(0);
+    expect(result.nodes).toHaveLength(2);
+    expect(result.nodes.every(node => node.status === 'context')).toBe(true);
     expect(result.files[0].represented).toBe(false);
   });
   it('resolves imported functions and includes unchanged callers', () => {
@@ -66,6 +67,39 @@ describe('snapshot analysis', () => {
     expect(validCanvas(emptyCanvas())).toBe(true);
     expect(validCanvas({ ...emptyCanvas(), positions: { bad: { x: Infinity, y: 0 } } })).toBe(false);
     expect(validCanvas({ ...emptyCanvas(), manualEdges: [{ id: 7 }] })).toBe(false);
+  });
+  it('retains the full A to B to C context chain and disconnected indexed functions', () => {
+    const before = source({ 'a.ts': 'function A() { return B(); }\nfunction B() { return C(); }\nfunction C() { return 1; }\nfunction unrelated() {}' });
+    const after = new Map(before); after.set('a.ts', before.get('a.ts')!.replace('return B()', 'return B() + 1'));
+    const result = compareSources(before, after, [{ path: 'a.ts', status: 'M', represented: false }]);
+    expect(result.nodes.map(node => node.name)).toEqual(['A', 'B', 'C', 'unrelated']);
+    expect(result.edges.map(edge => [edge.source, edge.target])).toEqual([['a.ts::A', 'a.ts::B'], ['a.ts::B', 'a.ts::C']]);
+    expect(result.edges.every(edge => result.nodes.some(node => node.id === edge.source) && result.nodes.some(node => node.id === edge.target))).toBe(true);
+  });
+  it('uses lexical AST ownership for duplicate callback names and nested declarations', () => {
+    const code = 'function outer() {\n consume(() => { const child = () => 1; });\n consume(() => { const child = () => 2; });\n}\nfunction top() {}';
+    const result = compareSources(source({ 'a.ts': code }), source({ 'a.ts': code }), []);
+    const callbacks = result.nodes.filter(node => node.name.endsWith('callback') || node.name.endsWith('callback #2'));
+    expect(callbacks).toHaveLength(2);
+    expect(callbacks.every(node => node.parentId === 'a.ts::outer')).toBe(true);
+    const children = result.nodes.filter(node => node.name.includes('.child'));
+    expect(children.map(node => node.parentId)).toEqual(callbacks.map(node => node.id));
+    expect(result.nodes.find(node => node.name === 'top')?.parentId).toBeUndefined();
+    expect(result.nodes.find(node => node.name === 'outer')?.after).toMatchObject({ line: 1, endLine: 4 });
+  });
+  it('records all call-site revision paths and lines, including repeated calls and renames', () => {
+    const result = compareSources(source({ 'old.ts': 'function a() {\n b();\n b();\n}\nfunction b() {}' }), source({ 'new.ts': 'function a() {\n\n b();\n}\nfunction b() {}' }), [{ path: 'new.ts', oldPath: 'old.ts', status: 'R80', represented: false }]);
+    expect(result.edges[0]).toMatchObject({ source: 'new.ts::a', target: 'new.ts::b', revision: 'both', sites: [
+      { revision: 'before', path: 'old.ts', line: 2 }, { revision: 'before', path: 'old.ts', line: 3 }, { revision: 'after', path: 'new.ts', line: 3 }
+    ] });
+  });
+  it('does not mark a changed inventory item represented merely because context functions exist', () => {
+    const code = 'function unchanged() { return 1; }';
+    const result = compareSources(source({ 'a.ts': code }), source({ 'a.ts': code }), [{ path: 'a.ts', status: 'M', represented: true }]);
+    expect(result.nodes).toHaveLength(1);
+    expect(result.files[0].represented).toBe(false);
+    const renamed = compareSources(source({ 'old.ts': code }), source({ 'new.ts': code }), [{ path: 'new.ts', oldPath: 'old.ts', status: 'R100', represented: false }]);
+    expect(renamed.files[0].represented).toBe(true);
   });
   it('rejects empty Git revisions before spawning Git', async () => {
     await expect(resolveCommit('.', '')).rejects.toThrow('valid Git revision');

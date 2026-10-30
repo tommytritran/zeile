@@ -8,11 +8,13 @@ const git = (...args) => execFileSync('git', args, { cwd: temp, env: { ...proces
 let app;
 try {
   git('init', '--initial-branch=main');
-  await writeFile(join(temp, 'app.ts'), 'export function value() { return 1; }');
-  git('add', 'app.ts');
+  await writeFile(join(temp, 'app.ts'), 'import { service } from "./service"; export function value() { return service(1); }');
+  await writeFile(join(temp, 'service.ts'), 'import { save } from "./connector"; export function service(value: number) { return save(value); }');
+  await writeFile(join(temp, 'connector.ts'), 'export function save(value: number) { return value; }');
+  git('add', 'app.ts', 'service.ts', 'connector.ts');
   const commit = () => git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=/dev/null', 'commit', '-m', 'fixture');
   commit();
-  await writeFile(join(temp, 'app.ts'), 'export function value() { return 2; }');
+  await writeFile(join(temp, 'app.ts'), 'import { service } from "./service"; export function value() { return service(2); }');
   git('add', 'app.ts'); commit(); git('branch', 'review-base', 'HEAD~1');
   app = await _electron.launch({ executablePath: '/Applications/Visual Studio Code.app/Contents/MacOS/Code', args: ['--no-sandbox', '--skip-welcome', '--skip-release-notes', '--disable-workspace-trust', `--user-data-dir=${join(temp, 'user')}`, `--extensions-dir=${join(temp, 'extensions')}`, `--extensionDevelopmentPath=${resolve('.')}`, temp], timeout: 60000 });
   const page = await app.firstWindow();
@@ -33,12 +35,24 @@ try {
         await expect(before).toHaveValue('main');
         await before.fill('review-base');
         await frame.getByRole('option', { name: 'review-base', exact: true }).click();
-        await frame.locator('.function-card').waitFor({ timeout: 30000 });
+        await frame.locator('.overview-card').waitFor({ timeout: 30000 });
         await expect(before).toHaveValue('review-base', { timeout: 30000 });
         const after = frame.getByRole('combobox', { name: 'After branch' });
         if (await after.isDisabled()) throw new Error('After branch selector is disabled.');
+        await expect(frame.getByLabel('Comparison kind')).toHaveValue('pr');
+        await frame.locator('.file-item').filter({ hasText: 'app.ts' }).click();
+        await expect(frame.locator('.cm-merge-a .cm-content')).toContainText('service(1)');
+        await expect(frame.locator('.cm-merge-b .cm-content')).toContainText('service(2)');
+        await frame.locator('.review-unit').click();
+        await frame.getByRole('button', { name: 'Explore this function', exact: true }).click();
+        await frame.locator('.neighbor').filter({ hasText: 'service' }).getByRole('button', { name: 'Reveal', exact: true }).click();
+        await frame.locator('.neighbor').filter({ hasText: 'save' }).getByRole('button', { name: 'Read', exact: true }).click();
+        await expect(frame.locator('.reading-heading h2')).toHaveText('save');
+        await expect(frame.locator('.source-reader .cm-content')).toContainText('return value');
+        await frame.getByRole('button', { name: 'Back in reading history' }).click();
+        await expect(frame.locator('.reading-heading h2')).toHaveText('value');
         verified = true;
-        console.log('PASS: real VS Code host loaded branches, mapped Git snapshots, and accepted branch selection.');
+        console.log('PASS: native host compared PR snapshots, read exact sources, explored through unchanged service to connector, and returned through history.');
       }
     }
   }

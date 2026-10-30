@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import type { ChangedFile } from './model';
+import type { ChangedFile, ReviewGraph, SourceVersion } from './model';
 const exec = promisify(execFile);
 export async function git(cwd: string, args: string[]): Promise<string> {
   const result = await exec('git', ['--no-pager', ...args], {
@@ -32,6 +32,20 @@ export async function changedFiles(repo: string, base: string, head: string): Pr
   return parseChangedFiles(await git(repo, ['diff', '--no-ext-diff', '--no-textconv', '--name-status', '-z', '--find-renames', base, head, '--']));
 }
 export interface Snapshot { sources: Map<string, string>; warnings: string[] }
+function safeSourcePath(path: string): boolean {
+  return /\.(?:[cm]?[jt]sx?|json|md|sql|ya?ml|css|html|graphql)$/i.test(path) &&
+    !/(^|\/)(?:node_modules|vendor|dist|build|\.git)(?:\/|$)/i.test(path) &&
+    !/(^|\/)\.env(?:[./_-]|$)/i.test(path) &&
+    !/(^|\/)(?:\.sentry-auth-token|credentials|secrets?|tokens?|keys?)(?:[._-][^/]*)?\.(?:json|ya?ml)$/i.test(path) &&
+    !/(?:package-lock|yarn\.lock|pnpm-lock|bun\.lock)/i.test(path);
+}
+function plainText(content: string): boolean {
+  for (let i = 0; i < content.length; i++) {
+    const code = content.charCodeAt(i);
+    if (code < 9 || (code > 13 && code < 32) || code === 65533) return false;
+  }
+  return true;
+}
 export async function readSnapshot(repo: string, commit: string, priorityPaths: string[] = []): Promise<Snapshot> {
   const listing = await git(repo, ['ls-tree', '-r', '-z', '-l', commit]);
   const sources = new Map<string, string>();
@@ -47,7 +61,7 @@ export async function readSnapshot(repo: string, commit: string, priorityPaths: 
     const tab = record.indexOf('\t');
     const [mode, type, hash, sizeText] = record.slice(0, tab).trim().split(/\s+/);
     const path = record.slice(tab + 1);
-    if (!/\.(?:[cm]?[jt]sx?|json)$/.test(path) || /(^|\/)(node_modules|vendor|dist|build|\.git)\//.test(path)) continue;
+    if (!/\.(?:[cm]?[jt]sx?|json)$/.test(path) || !safeSourcePath(path)) continue;
     if (type !== 'blob' || mode === '120000') continue;
     const size = Number(sizeText);
     if (size > 512000 || total + size > 16 * 1024 * 1024 || sources.size >= 1500) {
@@ -56,7 +70,39 @@ export async function readSnapshot(repo: string, commit: string, priorityPaths: 
     }
     total += size;
     const content = await git(repo, ['cat-file', 'blob', hash]);
-    if (!content.includes('\0')) sources.set(path, content);
+    if (plainText(content)) sources.set(path, content);
   }
   return { sources, warnings: warnings.slice(0, 8).concat(warnings.length > 8 ? [`${warnings.length - 8} additional files skipped.`] : []) };
+}
+
+/** Full changed-file reading has one budget across both immutable revisions. */
+export async function readFileSources(repo: string, base: string, head: string, files: ChangedFile[], before: Snapshot, after: Snapshot): Promise<NonNullable<ReviewGraph['fileSources']>> {
+  const result: NonNullable<ReviewGraph['fileSources']> = Object.create(null);
+  let total = 0;
+  for (const [revision, commit, snapshot] of [['before', base, before], ['after', head, after]] as const) {
+    const listing = await git(repo, ['ls-tree', '-r', '-z', '-l', commit]);
+    const entries = new Map(listing.split('\0').filter(Boolean).map(record => {
+      const tab = record.indexOf('\t');
+      const [mode, type, hash, size] = record.slice(0, tab).trim().split(/\s+/);
+      return [record.slice(tab + 1), { mode, type, hash, size: Number(size) }] as const;
+    }));
+    for (const file of files) {
+      result[file.path] ??= {};
+      const value = result[file.path];
+      if ((revision === 'before' && file.status.startsWith('A')) || (revision === 'after' && file.status.startsWith('D'))) continue;
+      const path = revision === 'before' ? file.oldPath ?? file.path : file.path;
+      const entry = entries.get(path);
+      const unavailable = (reason: string) => { value.unavailable = [value.unavailable, `${revision}: ${reason}`].filter(Boolean).join('; '); };
+      if (!safeSourcePath(path)) { unavailable('unsupported or sensitive file path'); continue; }
+      if (!entry || entry.type !== 'blob' || entry.mode === '120000') { unavailable('not a regular tracked file'); continue; }
+      if (entry.size > 512000) { unavailable('exceeds 500 KB file limit'); continue; }
+      if (total + entry.size > 16 * 1024 * 1024) { unavailable('exceeds combined 16 MB source limit'); continue; }
+      total += entry.size;
+      const code = snapshot.sources.get(path) ?? await git(repo, ['cat-file', 'blob', entry.hash]);
+      if (!plainText(code)) { unavailable('binary or non-UTF-8 content'); continue; }
+      const source: SourceVersion = { path, line: 1, endLine: code.split('\n').length, code, signature: 'Full file' };
+      value[revision] = source;
+    }
+  }
+  return result;
 }

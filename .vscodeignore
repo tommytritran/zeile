@@ -7,6 +7,7 @@ test-results/**
 playwright-report/**
 playwright.config.ts
 scripts/**
+docs/**
 .vscode/**
 tsconfig.json
 vite.config.ts

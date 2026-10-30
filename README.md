@@ -1,88 +1,109 @@
-# Zeile Review Map
+# Zeile Review Workspace
 
-A local, non-AI VS Code extension for exploring TypeScript/JavaScript changes as an interactive map.
+A local, non-AI VS Code extension for reviewing committed TypeScript/JavaScript changes and investigating their source relationships. No source uploads or inspected project execution.
 
-## Run the MVP
+## Project status: discontinued
 
-Requires Node 22+ for development, Git, and VS Code 1.95+.
+As of 2026-10-30, we have decided to abandon Zeile. The prototype and findings are retained for reference, but further product development and maintenance are not planned. The instructions below document the final experimental implementation, not an active product roadmap.
 
-1. Run `npm install` once.
-2. Open this folder in VS Code and press **F5** (Run Zeile extension).
-3. In the Extension Development Host, open a local Git repository.
-4. Run **Zeile: Open Review Map** from the Command Palette.
-5. Use the searchable **Before** and **After** dropdowns in the toolbar to select branches by name. Click and type part of a name to filter, then click a result or use ↑/↓ and Enter. Escape cancels the search. Each side is independent; selecting a result immediately loads the comparison. Local and remote-tracking branches are grouped separately.
+### Findings and decision
 
-For example, select `main` in **Before** and your feature branch in **After**. This compares their **exact committed snapshots**, not only changes since branching. No checkout or fetch occurs; remote-tracking branches are local copies. Uncommitted edits are excluded. **Refresh** reloads branch names and re-resolves your selected branch tips.
+The [exploratory reviewer-agent evaluation](docs/subletting-review-simulation.md) tested the actual analyzer and reader on a large, real pull request with five reviewer-agent sessions. It demonstrated orientation and some useful source navigation, but did not demonstrate an improvement over GitHub plus an IDE:
 
-Initially, **Before** selects local `main`, then local `master`, then `origin/main` or `origin/master` if only remote-tracking copies exist. **After** is the current commit (HEAD). With none of those branches, Before falls back to the previous commit. If the default branch already points to HEAD, the initial map is empty; choose a different After branch. Manual selection of identical commits produces an actionable error without replacing your map. In a single-commit repository without a default branch, choose branches with different commits; there is no previous commit snapshot. The browser demo shows disabled example dropdowns; real branch selection is available in VS Code.
+- The feature's own README provided the main domain and process orientation. File counts and relationship groups did not supply a review plan.
+- Function references helped with local navigation, but did not establish the important workflow across injected dependencies, callbacks, transactions, retries, persistence, and frontend state.
+- Nested operations and source navigation required additional discovery and context reconstruction. None of the five sessions completed all behavioral tasks within the exercise budget.
+- Reading history and notes did not establish a retained, source-backed review argument across those boundaries.
 
-Or run `npm run package`, then install `zeile-0.1.9.vsix` using **Extensions: Install from VSIX…** and reload VS Code. Check the installed version is 0.1.9.
+The [connected-diff assessment](docs/connected-diff-assessment.md) records later improvements to integrated reference navigation, production/test separation, and nested-symbol discovery. Those changes addressed specific barriers, but did not establish better review quality or speed.
 
-`npm run dev:webview` opens a standalone browser preview with clearly labeled demo data. It does not read local repositories.
+This was an exploratory agent exercise on one PR, not a controlled study with human reviewers. There was no GitHub-plus-IDE baseline, so we cannot claim that Zeile is slower, universally ineffective, or incapable of helping a narrow task. Our decision is that the demonstrated value does not justify further investment in a separate reader/map and its analysis and navigation complexity. We are stopping here rather than pursuing the report's proposed follow-up experiments or another redesign. Our default remains GitHub plus an IDE, supported by clear author-written review briefs and existing source-navigation tools.
 
-## Review interactions
+## Prototype reference
 
-- The **Review queue** groups changed functions and top-level file changes by file, with shown/total node counts. Selecting an item opens its implementation and focuses its file. Pure file renames remain in the queue. Signature-difference hints compare extracted signatures, which may be inferred or incomplete; they are not risk scores.
-- The canvas starts with changed production code only. **Tests** and **Generated** queue filters reveal those changed files; both start off. Categories are filename conventions, not semantic classification: test/spec suffixes and test directories; generated directories, `.generated`/`.gen` suffixes, and declaration files. The **Full change index** retains every changed file, including excluded and unmapped files. On narrow screens, use the **Review queue** button.
-- In the implementation inspector, **Show callers** reveals incoming source references and **Show dependencies** reveals referenced functions, one hop per click within the available graph. Counts include already-visible and excluded neighbors; the result reports newly revealed, already shown, and excluded nodes. Explicit exploration may reveal tests/generated code even when their queue filters are off, but never bypasses Exclusions. Source links retain Before/After revision evidence; method declarations do not prove runtime dispatch. No resolved callers does not mean unused.
-- **Reset exploration** returns to the filtered changed-code map. Changing queue filters or comparison resets exploration; hiding nodes never deletes their saved notes, positions, pins, or manual links. Filters and exploration are session-only. The current analyzer only returns the immediate neighborhood of changed functions: expansion from context nodes may be incomplete, and module-only changes do not have extracted call edges. This is not recursive or complete call-chain tracing.
-- Use **Exclusions** to hide matching files from the canvas. Enter one literal filename/path fragment per line, such as `.test.`, `.spec.`, `__tests__/`, or `generated`. Matching is case-insensitive against the canonical/current repository-relative path (the old path for deleted files); entries are not globs or regexes. Nothing is excluded by default. The list is saved locally per repository across comparisons and workspaces in the current VS Code profile. Matching files remain labeled **excluded** in the change index; a canvas notice reports hidden files/nodes. Clear the list to restore nodes, notes, saved positions and manual links. Exclusions affect rendering, not analysis duration or snapshot limits.
-- Drag file headers to move groups; drag functions within groups. Connections follow.
-- **Arrange → Architecture hints** places backend Entry/API, Logic/domain, and Integration/persistence files in left-to-right columns; frontend Page/layout, Feature/state, and Component/API-client files use a separate row band. File headers show folder-based roles. This is an optional organizational convention, not execution order or proof of start/end points; unknown files remain unclassified. Pins are preserved; drag freely afterward or return to **Source links**. Newly revealed files receive role-based initial positions; use Auto-layout again to arrange the complete current map.
-- JSX component composition and frontend HTTP/GraphQL-to-backend endpoint links are not currently extracted. A monorepo alone does not establish those relationships. Manual links may document reviewer understanding; automatic cross-boundary links require explicit contract/route-registration evidence and would be separate from ordinary source references.
-- Select a function to highlight its upstream/downstream **source-reference paths** across the current map and dim unrelated nodes/links. Before and After are traversed independently; revision colors and method-declaration dashes remain visible. Manual annotations do not participate. Collapsed groups preserve logical function relationships without inventing file-level paths. Click empty canvas or **Clear highlight** to clear the selection. This does not reveal hidden nodes, prove runtime/data flow, or establish complete impact coverage.
-- Collapse/expand file groups, fit the map, pin file positions, or explicitly re-run automatic layout.
-- Click a function to inspect **Before**, **After**, or **Compare**. All three views include local TypeScript/JavaScript and JSX syntax highlighting.
-- **Compare** keeps labeled Before/After sources separate. **Highlight changes** is on by default: subtle shading marks changed lines, stronger underlined highlights mark edited text, and −/+ gutter symbols identify each side without relying only on color. Turn it off for clean reading without losing alignment, reading position, or change navigation. Use Previous/Next change to jump between textual change regions, **Fold unchanged context** for long implementations, and **Expand** for a wider reading surface. Source line numbers use each revision's original location. Region counts describe textual chunks, not semantic changes. There is no separate Diff tab.
-- Drag connection handles to create a dashed amber **manual** relationship. Select a manual edge and press Delete to remove it. Extracted edges and nodes cannot be deleted.
-- Add local notes in the implementation inspector. Positions, notes, collapse state, and manual connections are saved per repository and exact commit pair.
-- Drag the Implementation panel's left edge to resize it. Focus the divider and use ←/→ (Shift for larger steps); double-click it or press Home to reset. Width is retained across functions for the current session. **Expand/Reduce** temporarily maximizes the reading surface without losing your chosen width.
-- Drag the Review queue's right edge to resize the left panel. It supports the same arrow-key, Shift, double-click, and Home controls. Its width is kept for the session; the expanded Implementation panel follows its boundary.
-- Open historical function source in the native editor. Non-code/unmapped files remain in the change index and scope panel.
+## Review journey
 
-## Scope and limitations
+1. Run **Zeile: Open Review Map** in a trusted local Git workspace.
+2. Select the target branch in **Before**, and the feature branch in **After**. Both selectors support name search and keyboard navigation.
+3. Start at **Overview → Related changes**: automatically grouped changed files linked by source references in one snapshot, directly or through at most one unchanged function. Read connected diffs from a suggested symbol, or use **All files** and the complete searchable **Changed files** navigator. Groups exclude tests/generated files and are navigation suggestions, not workflows, execution order, complete impact coverage, or review status. Unlinked files are never removed. Comparison metadata is available in an expandable section rather than dominating the reading entry point.
+4. Select a file to **Read change** in the full remaining workspace. Compare is the default, with clean Before/After sources and an optional **Highlight changes** toggle. Use Previous/Next change, optional unchanged-context folding, and Previous/Next file.
+5. Select an owning function to read its diff with **Read connected changes** directly above it: incoming references → selected change → outgoing references. Click a related symbol to read its actual Before/After diff without opening a separate map; Back restores your previous reading mode and position. Before/After reference scope is explicit and independent of Compare mode. Nested-body references are included with lexical provenance, not fabricated callback invocation. Tests are separate from production references; declaration dispatch remains uncertain. Expand or hide connections to control reading space. **Find any indexed function** in full-file context searches nested operations and unchanged symbols, including operations inside large connector factories. Nested symbols remain individually accessible inside their owner. A pure rename appears once as a file change.
+6. Use **Explore this function** for a small local relationship map. Start with the chosen function; browse named incoming callers/outgoing dependencies and reveal only the branch you want. The map does not include unrelated changed functions. Neighbor lists show ten items initially with explicit Show more; nothing is silently discarded. **Show selected symbol** and **Fit investigation** move the camera explicitly, rather than jumping whenever you read code.
+7. **Read** a neighbor or open an indexed **Call site**, then use **Back/Forward** to return to your reading position. **Return to code** preserves the current source. Reading mode and comparison preferences survive navigation; scroll positions are cached per source/mode for the session.
 
-This is a source navigation MVP, not complete runtime tracing or automated verification. Calls through interfaces, DI, event emitters, callbacks, computed properties, and external packages may be unresolved. Method edges identify a declaration, not guaranteed concrete dispatch. No caller edges resolved does **not** mean unused.
+Map highlighting, reader selection, and camera movement are separate. Clearing a highlight or clicking empty map space does not close the code. The exploration snapshot is explicitly **Before** or **After**, so old and new references cannot accidentally form a mixed-revision path.
 
-The analyzer uses the TypeScript compiler API with an in-memory Git snapshot. It reads root compiler options but does not resolve extended configurations, project references, installed dependency packages, or standard library declarations. Inferred types may consequently be incomplete. No inspected repository code, package scripts, installs, or builds are executed. Git operations are read-only; the working tree is not checked out or modified. Analysis runs in a worker thread.
+The older global function canvas, folder-based architecture arrangements, and right-side implementation inspector are no longer the default interface. Code and relationships use alternate main surfaces rather than squeezing both into narrow columns. The left file navigator remains resizable by dragging its right edge, arrow keys (Shift for larger steps), and Home/double-click to reset. Notes and older canvas annotations remain in local storage; this workspace does not expose the old pin/manual-edge authoring controls.
 
-Snapshots are bounded to 1,500 eligible source/config files, 16 MB total, and 500 KB per file. Changed files are prioritized before background context. Skipped files produce scope warnings; missing snapshot coverage is not treated as deleted code. Large or unsupported changes remain visible in the file inventory. Function matching uses file paths and declaration names (plus Git rename candidates), not semantic identity across arbitrary moves/renames. Anonymous callbacks use their call-site names/test descriptions and occurrence order rather than line numbers; inserting/reordering indistinguishable callbacks can still affect matching. Module context nodes show complete files for top-level changes. Nested callbacks and enclosing functions each have nodes, so node count can exceed changed-file count. Tests/generated files and unchanged context are hidden from the initial focused map but retained for filtering and explicit exploration.
+## What is compared?
 
-Canvas state is local workspace data, not shared review approval. Saved views are commit-specific; a new head starts a new map. Manual annotations do not prove a call relationship or correctness.
+Overview starts with a comparison brief: target/effective-base/head commit IDs, file-status totals, Git-reported text-line additions/deletions, directory distribution, and complete/incomplete file-source coverage. Totals describe the whole comparison, independently of navigator filters. Binary files are excluded from text-line totals. Commit context shows the total commits in effective `Before..After` and up to 20 recent subjects, author names, dates, and hashes; displayed author-name counts are not a complete contributor count. Missing metadata is explicitly unavailable. Directory and test/generated categories are path-based, not architecture, risk, test execution, or review-progress claims. The brief does not verify remote freshness or GitHub parity.
 
-## Development
+**PR changes (merge base)** is the default. It compares the unique common ancestor of the selected target/feature tips with the feature tip, equivalent to the usual `git diff target...feature` scope used for a GitHub PR. This excludes target-only changes after divergence. **Before source is the merge-base snapshot**, not necessarily the latest target-branch source.
 
-### Local extension loop — no VSIX installation
+**Exact snapshots** is an explicit alternative comparing the selected tips directly. The comparison basis and effective commit IDs appear above the workspace. Missing or ambiguous merge bases produce an actionable error; Zeile never silently switches to exact mode. The branch controls remain available for recovery.
 
-Open **this Zeile source folder** in VS Code, select **Run Zeile extension** in Run and Debug, and press **F5** (or **Run → Start Debugging**). This starts `npm run watch`, waits until both the extension/analysis worker and webview have built successfully, then opens an **Extension Development Host** running Zeile directly from this folder. Open the repository you want to review in that new window and run **Zeile: Open Review Map**. The repository's own dependencies/build scripts are not needed.
+Before initially prefers remote-tracking `origin/main`, then `origin/master`, then local `main` or `master`, so an older checked-out target does not take precedence over its remote-tracking counterpart. These are still local cached refs, not a live GitHub check. After starts at HEAD. Without a conventional target branch, Zeile falls back to the previous commit; a root commit has no previous snapshot. Identical initial tips produce an empty comparison. Manual identical-tip selections produce a warning.
 
-Keep the source window and its watch task running while you edit:
+All refs are local. No fetch, checkout, merge, or push occurs. **Refresh** reloads local branch names and re-resolves the selected comparison. Matching GitHub requires the same pushed commits and target branch; Zeile does not discover PR metadata from GitHub. Dirty working-tree edits are excluded.
 
-- **Webview UI/CSS changes:** save, wait for `[zeile-watch] ready` in the task terminal, then close the Zeile review tab in the development window and run **Zeile: Open Review Map** again. This loads the rebuilt local assets.
-- **Extension or analyzer changes (`src/`):** save, wait for the ready message, then use **Restart** in the source window's debug toolbar (**Shift+Cmd+F5** on macOS). Reopen the map if needed. Rebuilding alone does not replace already-running extension code or workers.
-- **Type errors:** run the **Typecheck Zeile** task or `npm run typecheck:watch` in another terminal. The bundler watches syntax/build errors, not TypeScript types; build errors appear in its terminal and prevent the ready message until fixed.
-- **Stop watching:** use **Tasks: Terminate Task → Watch Zeile** in the source window. Stopping debugging alone can leave the reusable watch task running.
+## Source reading, exclusions and notes
 
-This uses packaged-style local webview assets and the same CSP as the installed extension; it is **automatic rebuild, not hot reload**. Your normally installed Zeile remains unchanged—test the new code in the window titled **Extension Development Host**. Use `npm run package` only when distributing/installing a release.
+- TypeScript/JavaScript/JSX source has local syntax highlighting in Compare, Before, and After. Syntax colors describe code; subtle line shading, underlined inline highlights and −/+ gutter marks describe edits. Toggle change highlighting off without replacing editors or resetting the reading position.
+- Function and file sources use original revision paths and line numbers. Supported changed-file documents such as Markdown, SQL, YAML, JSON, CSS, HTML and GraphQL are readable as plain text. No code is executed.
+- Binary, sensitive-config paths, symlinks, unsupported extensions, and oversized files stay in the complete inventory with explicit unavailable-source reasons. Partial file coverage has a warning: an empty pane is not silently presented as a deletion.
+- **Exclusions** accepts up to 100 literal, case-insensitive filename/path fragments, one per line—not globs or regexes. Examples: `.test.`, `__tests__/`, `generated`. They hide exploration nodes, never remove changed files from review or close readable code. Settings are stored locally per repository in the current VS Code profile.
+- **Review note** is optional, local, and specific to a source item and effective commit pair. Notes are not approval or correctness evidence. There is no automatic reviewed/verified status.
 
-For faster UI-only iteration with browser hot reload, run `npm run dev:webview` and open `http://127.0.0.1:5189`. This uses demo data; real repositories, branch selection, and the extension bridge require the development host.
+## Local review checkpoints (experiment)
 
-## Troubleshooting loading
+In **Overview**, choose **Save checkpoint** before leaving a review. After committing more changes to the same feature branch, use **Refresh** to see a separate **Since your checkpoint** file inventory. **Replace checkpoint** advances the baseline explicitly; **Clear checkpoint** removes it. Nothing is saved automatically by reading code, and a checkpoint never means reviewed, approved, verified, or safe.
 
-Run **Zeile: Show Diagnostics** (or click **Show diagnostics** on the loading/error card). The **Zeile** Output channel records whether Git access succeeded, how many branches loaded, whether the webview connected, and worker completion/errors. It does not log source contents. Permission and missing-Git errors appear there and in a notification. No GitHub permissions or network authentication are required for local mapping. VS Code must trust the workspace.
+Only versioned base/head commit IDs and a timestamp are stored in the current VS Code profile's local extension storage; no source is copied, uploaded, or synchronized by Zeile. Checkpoints are scoped to the repository, target/feature branch identities, and PR/exact comparison mode. HEAD follows its branch identity, not whichever branch you later check out; detached HEAD checkpoints are scoped to that commit. No database, backend, accounts, or telemetry are involved. Browser-only demo mode cannot compare Git checkpoints.
 
-Mapping can be canceled and is stopped automatically after two minutes. Branch controls remain independent of mapping. A missing webview connection produces a warning after 15 seconds. The standalone browser preview deliberately does not access your repository.
+The list compares the saved feature commit with the current feature commit, includes renames/deletions and files no longer present in the PR inventory, and does not filter the full PR. Links open the **full PR comparison**, not an incremental source diff. Files outside the current PR inventory remain listed without a source link. A changed comparison baseline, missing saved commit, rewritten/non-descendant history, or Git error makes the delta explicitly unavailable; replace the checkpoint to start again. Notes remain specific to their original commit pair and are not carried forward.
 
-## Development commands
+This first experiment tests whether a persistent, explicit baseline reduces re-orientation after PR updates. It does not track inspected files, preserve conclusions, analyze semantic impact, or claim measured review-speed gains. Try saving a checkpoint on a representative PR, return after another commit, and compare the time needed to identify what needs another look with your normal workflow.
+
+## Source relationship evidence
+
+The analyzer uses the TypeScript compiler API and retains the functions and call/declaration edges resolved in its bounded immutable snapshots. Unlike the earlier one-hop payload, the index retains unchanged intermediate functions so exploration can continue through them on demand. The displayed map remains small and explicit.
+
+Edges are **static source evidence**, not runtime calls, execution order, data flow, or complete impact coverage. Property-access references identify method declarations, not guaranteed concrete dispatch. Call sites include snapshot/path/line evidence when available. Lexical ownership groups nested functions for review; it is not an invocation edge.
+
+DI, interfaces, callbacks, events, computed properties, external packages, JSX composition, and frontend HTTP/GraphQL-to-backend boundaries may be unresolved. A monorepo alone does not establish cross-boundary relationships. No resolved callers does **not** mean unused. Folder structure is not used to invent call edges or workflow endpoints.
+
+The analyzer reads root compiler options but does not resolve extended tsconfig files, project references, installed packages, or standard library declarations. Inferred signatures can be incomplete. Unchanged context with missing opposite-snapshot coverage is not treated as a definitive addition/deletion.
+
+Snapshot indexing is bounded to 1,500 eligible source/config files, 16 MB per snapshot, and 500 KB per file. Changed files are prioritized. Full changed-file reading has a separate combined 16 MB budget across both revisions and the same per-file limit. Scope warnings disclose omitted context; there is no guarantee that all neighbors were indexed. Function matching uses paths, declaration/call-site names and occurrence order—not semantic identity across arbitrary moves or indistinguishable callback insertions.
+
+## Local development — no repeated VSIX installation
+
+Requires Node 22+, Git, and VS Code 1.95+.
+
+1. Run `npm install` once in this Zeile folder.
+2. Open the source folder in VS Code and press **F5**, choosing **Run Zeile extension**.
+3. The watch task waits for extension/worker/webview builds, then opens an Extension Development Host loading directly from this folder.
+4. Open the repository to review in that new window and run **Zeile: Open Review Map**.
+
+For UI/CSS edits, save and wait for `[zeile-watch] ready`, then close/reopen the review tab. For extension/analyzer edits, restart the debug host after rebuilding. This is automatic rebuild, not extension-webview HMR. Stop the reusable task through **Tasks: Terminate Task → Watch Zeile**. The inspected repository needs no dependency installation or scripts.
+
+For browser-only hot reload, run `npm run dev:webview` and open `http://127.0.0.1:5189`. This uses labeled demo data; real branch selection requires VS Code.
+
+For distribution, run `npm run package`, then use **Extensions: Install from VSIX…** and reload VS Code. The current version is shown in `package.json` and diagnostics. Version 0.3.0 introduces connected-diff reading; it does not add inferred interface-to-implementation or network links.
+
+## Verification and troubleshooting
 
 - `npm run typecheck`
-- `npm run watch` (extension, worker, and local webview rebuilds)
-- `npm run typecheck:watch`
 - `npm test`
-- `npm run test:e2e` (install Chromium first with `npx playwright install chromium`)
+- `npm run test:e2e` (install Chromium with `npx playwright install chromium`)
 - `npm run build`
 - `npm run package`
+- `node scripts/check-watch.mjs`
+- `node scripts/check-vscode.mjs` (native macOS VS Code smoke test, isolated temporary repository/profile)
 
-Architecture: `src/git.ts` reads immutable objects; `src/analyze.ts` extracts/comparers symbols; `src/analysis-worker.ts` runs analysis off the extension host; `src/extension.ts` bridges the sandboxed webview; `webview/` renders the canvas and source inspector. No hosted service or AI is involved.
+Tests include diverged Git history, missing ancestry recovery, cancellation during revision resolution, unchanged-chain retention, nested ownership, bounded file sources, and an analyzer-generated 20-file browser review journey with real rectangle-intersection assertions and reading-history restoration. The native smoke test reads both committed sources, follows an unchanged service to a connector, and returns through history. These are correctness checks—not proof of review-speed improvement. The redesigned workflow still needs observed evaluation on representative PRs.
 
-The current folder need not itself be a Git repository to build the extension. The command operates on the repository opened in the Extension Development Host. Git fixtures in tests are created and removed in the OS temporary directory.
+Use **Scope & limits** for source coverage. **Zeile: Show Diagnostics** opens the local Output channel with Git/worker/bridge startup results and elapsed time, not source contents. Mapping can be canceled and is stopped after two minutes. A missing webview connection warns after 15 seconds. No GitHub permissions or network credentials are required.
+
+Architecture: `src/git.ts` reads immutable Git objects; `src/revisions.ts` resolves comparison scope; `src/analyze.ts` builds the bounded source index; the worker keeps analysis off the host thread; `src/extension.ts` bridges the sandboxed webview; `webview/` supplies compact scope, a wide source reader, and on-demand investigations. The Zeile folder itself need not be a Git repository.
